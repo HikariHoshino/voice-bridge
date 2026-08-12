@@ -1,0 +1,800 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>声桥</title>
+  <link rel="icon" type="image/png" href="data:image/png;base64,{{APP_ICON_BASE64}}">
+  <script>
+    (() => {
+      let preference = 'system';
+      try {
+        preference = localStorage.getItem('voiceBridgeTheme') || 'system';
+      } catch (_) {}
+      const dark = preference === 'dark'
+        || (preference === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
+      document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+      document.documentElement.dataset.themePreference = preference;
+    })();
+  </script>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      --ink: #132238;
+      --muted: #64748b;
+      --line: #dbe4f0;
+      --blue: #2563eb;
+      --blue-pressed: #1d4ed8;
+      --teal: #0f766e;
+      --teal-pressed: #0f5f59;
+      --confirm: #d97706;
+      --confirm-pressed: #b45309;
+      --surface: #fffffff0;
+      --surface-line: #ffffffc0;
+      --input: #ffffff;
+      --secondary: #edf2f8;
+      --secondary-pressed: #dce5f0;
+      --status: #dff8ec;
+      --status-ink: #047857;
+      --shadow: #45608016;
+    }
+    :root[data-theme="dark"] {
+      color-scheme: dark;
+      --ink: #e5edf8;
+      --muted: #9cafc5;
+      --line: #334155;
+      --blue: #3b82f6;
+      --blue-pressed: #2563eb;
+      --teal: #0f9488;
+      --teal-pressed: #0f766e;
+      --confirm: #d97706;
+      --confirm-pressed: #b45309;
+      --surface: #182235ee;
+      --surface-line: #ffffff0d;
+      --input: #111827;
+      --secondary: #263449;
+      --secondary-pressed: #33445c;
+      --status: #15352f;
+      --status-ink: #6ee7b7;
+      --shadow: #00000066;
+    }
+    * { box-sizing: border-box; }
+    html, body { min-height: 100%; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      min-height: 100dvh;
+      padding: 24px 18px calc(28px + env(safe-area-inset-bottom));
+      color: var(--ink);
+      background: #eef4ff;
+      transition: color .32s ease, background-color .32s ease;
+    }
+    :root[data-theme="dark"] body { background-color: #101827; }
+    body::before,
+    body::after {
+      position: fixed;
+      z-index: -1;
+      inset: 0;
+      content: "";
+      pointer-events: none;
+      transition: opacity .38s ease;
+    }
+    body::before {
+      opacity: 1;
+      background: linear-gradient(160deg, #eef4ff 0%, #f8fafc 48%, #ecfeff 100%);
+    }
+    body::after {
+      opacity: 0;
+      background: linear-gradient(160deg, #101827 0%, #111827 55%, #0d2230 100%);
+    }
+    :root[data-theme="dark"] body::before { opacity: 0; }
+    :root[data-theme="dark"] body::after { opacity: 1; }
+    main { width: 100%; max-width: 560px; margin: auto; }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      margin-bottom: 20px;
+    }
+    .brand { display: flex; min-width: 0; align-items: center; gap: 13px; }
+    .mark {
+      width: 48px;
+      height: 48px;
+      flex: 0 0 auto;
+      border-radius: 15px;
+      box-shadow: 0 10px 24px #2563eb30;
+    }
+    h1 { margin: 0; font-size: 25px; line-height: 1.1; }
+    .tagline { margin: 4px 0 0; color: var(--muted); font-size: 14px; }
+    .header-actions {
+      position: relative;
+      display: flex;
+      flex: 0 0 auto;
+      align-items: center;
+      gap: 8px;
+    }
+    .settings-control { position: relative; }
+    .header-icon-button {
+      display: grid;
+      width: 38px;
+      height: 38px;
+      padding: 0;
+      place-items: center;
+      border: 1px solid var(--line);
+      border-radius: 50%;
+      color: var(--ink);
+      background: var(--surface);
+      transition:
+        transform .12s ease,
+        filter .18s ease,
+        color .28s ease,
+        background-color .28s ease,
+        border-color .28s ease;
+    }
+    .header-icon-button svg {
+      width: 18px;
+      height: 18px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.8;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    .settings-popover {
+      position: absolute;
+      z-index: 5;
+      top: calc(100% + 10px);
+      right: -121px;
+      width: min(285px, calc(100vw - 28px));
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      color: var(--ink);
+      background: var(--surface);
+      box-shadow: 0 18px 45px #20324a2b;
+      backdrop-filter: blur(16px);
+      transition: color .28s ease, background-color .28s ease, border-color .28s ease;
+    }
+    .settings-popover[hidden] { display: none; }
+    .settings-title { margin: 0 0 10px; font-size: 14px; font-weight: 750; }
+    .switch-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 10px 0;
+      color: var(--ink);
+      font-size: 14px;
+    }
+    .switch-row + .switch-row { border-top: 1px solid var(--line); }
+    .switch-row input {
+      width: 42px;
+      height: 24px;
+      flex: 0 0 auto;
+      margin: 0;
+      appearance: none;
+      border-radius: 999px;
+      background: var(--secondary-pressed);
+      transition: background-color .22s ease;
+    }
+    .switch-row input::after {
+      display: block;
+      width: 18px;
+      height: 18px;
+      margin: 3px;
+      border-radius: 50%;
+      content: "";
+      background: #fff;
+      box-shadow: 0 2px 7px #0f172a30;
+      transition: transform .22s ease;
+    }
+    .switch-row input:checked { background: var(--blue); }
+    .switch-row input:checked::after { transform: translateX(18px); }
+    .switch-row input:focus-visible { outline: 3px solid #2563eb35; outline-offset: 2px; }
+    .theme-control {
+      position: relative;
+      flex: 0 0 auto;
+    }
+    .theme-control::after {
+      position: absolute;
+      top: 50%;
+      right: 12px;
+      content: "⌄";
+      color: var(--muted);
+      pointer-events: none;
+      transform: translateY(-58%);
+    }
+    #theme {
+      min-height: 38px;
+      padding: 0 31px 0 13px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      outline: none;
+      appearance: none;
+      color: var(--ink);
+      background: var(--surface);
+      font: inherit;
+      font-size: 13px;
+      font-weight: 650;
+      transition: color .28s ease, background-color .28s ease, border-color .28s ease;
+    }
+    #theme:focus-visible { box-shadow: 0 0 0 4px #2563eb24; }
+    #status {
+      display: inline-flex;
+      margin: 0 0 12px;
+      padding: 7px 11px;
+      border-radius: 999px;
+      color: var(--status-ink);
+      background: var(--status);
+      font-size: 13px;
+      font-weight: 650;
+      transition: color .28s ease, background-color .28s ease;
+    }
+    .card {
+      padding: 20px;
+      border: 1px solid var(--surface-line);
+      border-radius: 22px;
+      background: var(--surface);
+      box-shadow: 0 18px 45px var(--shadow);
+      backdrop-filter: blur(12px);
+      transition: background-color .32s ease, border-color .32s ease, box-shadow .32s ease;
+    }
+    .field-label { display: block; margin-bottom: 9px; font-weight: 750; }
+    textarea {
+      width: 100%;
+      min-height: 230px;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 15px;
+      outline: none;
+      color: var(--ink);
+      background: var(--input);
+      font: inherit;
+      font-size: 18px;
+      line-height: 1.55;
+      resize: vertical;
+      transition: color .28s ease, background-color .28s ease, border-color .18s ease, box-shadow .18s ease;
+    }
+    textarea:focus { border-color: var(--blue); box-shadow: 0 0 0 4px #2563eb1f; }
+    .hint { margin: 10px 2px 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+    .action-panel { margin-top: 18px; }
+    .primary-actions {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 10px;
+    }
+    button {
+      border: 0;
+      font: inherit;
+      -webkit-tap-highlight-color: transparent;
+      touch-action: manipulation;
+    }
+    .primary-button {
+      min-height: 54px;
+      padding: 0 12px;
+      border-radius: 17px;
+      color: #fff;
+      font-size: 15px;
+      font-weight: 750;
+      box-shadow: 0 10px 24px #2563eb25;
+      transition:
+        transform .12s ease,
+        filter .18s ease,
+        opacity .18s ease,
+        color .22s ease,
+        background-color .22s ease,
+        box-shadow .22s ease;
+    }
+    #send { background: var(--blue); }
+    #send:active,
+    #send.is-pressed { background: var(--blue-pressed); }
+    #enter { background: var(--teal); box-shadow: 0 10px 24px #0f766e24; }
+    #enter:active,
+    #enter.is-pressed { background: var(--teal-pressed); }
+    #send.confirming,
+    #enter.confirming {
+      background: var(--confirm);
+      box-shadow: 0 10px 26px #d9770638;
+    }
+    #send.confirming:active,
+    #send.confirming.is-pressed,
+    #enter.confirming:active,
+    #enter.confirming.is-pressed { background: var(--confirm-pressed); }
+    .secondary-actions {
+      display: flex;
+      justify-content: center;
+      gap: clamp(24px, 11vw, 52px);
+      margin-top: 16px;
+    }
+    .secondary-item {
+      display: grid;
+      justify-items: center;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+    }
+    .icon-button {
+      display: grid;
+      width: 44px;
+      height: 44px;
+      padding: 0;
+      place-items: center;
+      border: 1px solid var(--line);
+      border-radius: 50%;
+      color: var(--ink);
+      background: var(--secondary);
+      box-shadow: 0 6px 16px #33415512;
+      transition:
+        transform .12s ease,
+        filter .18s ease,
+        opacity .18s ease,
+        color .25s ease,
+        background-color .22s ease,
+        border-color .25s ease,
+        box-shadow .22s ease;
+    }
+    .icon-button svg {
+      width: 19px;
+      height: 19px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.9;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    button:active,
+    button.is-pressed { transform: scale(.955); filter: brightness(.95); }
+    button:disabled { opacity: .38; box-shadow: none; }
+    @media (hover: hover) {
+      #send:hover { background: #2f6cf0; }
+      #enter:hover { background: #12847b; }
+      #send.confirming:hover,
+      #enter.confirming:hover { background: #e18208; }
+      .icon-button:hover,
+      .header-icon-button:hover { background: var(--secondary-pressed); }
+      #theme:hover { border-color: var(--blue); }
+    }
+    #message {
+      min-height: 23px;
+      margin-top: 12px;
+      color: var(--muted);
+      text-align: center;
+      font-size: 14px;
+      transition: color .28s ease;
+    }
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+    @media (max-width: 390px) {
+      body { padding-right: 14px; padding-left: 14px; }
+      .card { padding: 17px; }
+      .primary-button { padding: 0 8px; font-size: 14px; }
+      .theme-control::after { right: 10px; }
+      #theme { width: 96px; padding-right: 27px; padding-left: 11px; }
+      .settings-popover { right: -104px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        scroll-behavior: auto !important;
+        transition-duration: .01ms !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div class="brand">
+        <img class="mark" src="data:image/png;base64,{{APP_ICON_BASE64}}" alt="声桥">
+        <div>
+          <h1>声桥</h1>
+          <p class="tagline">用手机说，在电脑上写</p>
+        </div>
+      </div>
+      <div class="header-actions">
+        <div class="settings-control">
+          <button class="header-icon-button" id="settings-toggle" type="button"
+                  aria-label="操作设置" aria-expanded="false" aria-controls="mobile-settings">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.6v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/>
+            </svg>
+          </button>
+          <div class="settings-popover" id="mobile-settings" hidden>
+            <p class="settings-title">操作确认</p>
+            <label class="switch-row">
+              <span>按下回车二次确认</span>
+              <input id="confirm-enter" type="checkbox">
+            </label>
+            <label class="switch-row">
+              <span>发送到电脑二次确认</span>
+              <input id="confirm-send" type="checkbox">
+            </label>
+          </div>
+        </div>
+        <label class="theme-control">
+          <span class="sr-only">页面外观</span>
+          <select id="theme" aria-label="页面外观">
+            <option value="system">跟随系统</option>
+            <option value="light">浅色</option>
+            <option value="dark">深色</option>
+          </select>
+        </label>
+      </div>
+    </header>
+
+    <p id="status">● 正在连接电脑</p>
+
+    <section class="card">
+      <label class="field-label" for="text">双向文字区</label>
+      <textarea id="text" autofocus placeholder="点击这里，再点击手机输入法上的麦克风说话……"></textarea>
+      <p class="hint">电脑发来的文字会插入当前光标。清空或发送后均可在本页撤销，不会影响电脑端。</p>
+
+      <div class="action-panel">
+        <div class="primary-actions">
+          <button class="primary-button" id="send" type="button" aria-pressed="false">
+            <span id="send-label">发送到电脑</span>
+          </button>
+          <button class="primary-button" id="enter" type="button" aria-pressed="false">
+            <span id="enter-label">按下回车</span>
+          </button>
+        </div>
+
+        <div class="secondary-actions">
+          <div class="secondary-item">
+            <button class="icon-button" id="clear" type="button" aria-label="清空" title="清空">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5"/>
+              </svg>
+            </button>
+            <span>清空</span>
+          </div>
+          <div class="secondary-item">
+            <button class="icon-button" id="undo" type="button" aria-label="撤销" title="撤销" disabled>
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M9 7 4 12l5 5M5 12h8a6 6 0 0 1 6 6"/>
+              </svg>
+            </button>
+            <span>撤销</span>
+          </div>
+          <div class="secondary-item">
+            <button class="icon-button" id="copy" type="button" aria-label="复制" title="复制">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <rect x="8" y="8" width="11" height="11" rx="2"/>
+                <path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>
+              </svg>
+            </button>
+            <span>复制</span>
+          </div>
+        </div>
+      </div>
+
+      <div id="message" role="status" aria-live="polite"></div>
+    </section>
+  </main>
+
+  <script>
+    const text = document.getElementById('text');
+    const send = document.getElementById('send');
+    const sendLabel = document.getElementById('send-label');
+    const enter = document.getElementById('enter');
+    const enterLabel = document.getElementById('enter-label');
+    const undo = document.getElementById('undo');
+    const message = document.getElementById('message');
+    const status = document.getElementById('status');
+    const theme = document.getElementById('theme');
+    const settingsToggle = document.getElementById('settings-toggle');
+    const settingsPopover = document.getElementById('mobile-settings');
+    const confirmEnter = document.getElementById('confirm-enter');
+    const confirmSend = document.getElementById('confirm-send');
+    const systemTheme = matchMedia('(prefers-color-scheme: dark)');
+    const queryToken = new URLSearchParams(location.search).get('token') || '';
+    if (queryToken) localStorage.setItem('voiceBridgeToken', queryToken);
+    const token = queryToken || localStorage.getItem('voiceBridgeToken') || '';
+    const stateKey = 'voiceBridgeReceiveState-' + token;
+    let receiveState = { session: '', after: 0 };
+    let clearedSnapshot = null;
+    let confirmationSettings = { confirm_enter: true, confirm_send: false };
+    let sendConfirmationTimer = null;
+    let enterConfirmationTimer = null;
+
+    try {
+      receiveState = JSON.parse(localStorage.getItem(stateKey)) || receiveState;
+    } catch (_) {}
+
+    function applyTheme(preference) {
+      const dark = preference === 'dark'
+        || (preference === 'system' && systemTheme.matches);
+      document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+      document.documentElement.dataset.themePreference = preference;
+    }
+
+    theme.value = document.documentElement.dataset.themePreference || 'system';
+    theme.addEventListener('change', () => {
+      try {
+        localStorage.setItem('voiceBridgeTheme', theme.value);
+      } catch (_) {}
+      applyTheme(theme.value);
+    });
+    const handleSystemTheme = () => {
+      if (theme.value === 'system') applyTheme('system');
+    };
+    if (systemTheme.addEventListener) {
+      systemTheme.addEventListener('change', handleSystemTheme);
+    } else {
+      systemTheme.addListener(handleSystemTheme);
+    }
+
+    function applyConfirmationSettings(settings) {
+      confirmationSettings = {
+        confirm_enter: settings.confirm_enter !== false,
+        confirm_send: settings.confirm_send === true
+      };
+      confirmEnter.checked = confirmationSettings.confirm_enter;
+      confirmSend.checked = confirmationSettings.confirm_send;
+      if (!confirmationSettings.confirm_enter) resetEnterConfirmation();
+      if (!confirmationSettings.confirm_send) resetSendConfirmation();
+    }
+
+    async function loadConfirmationSettings() {
+      try {
+        const response = await fetch('/settings?token=' + encodeURIComponent(token), {
+          cache: 'no-store'
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || '读取设置失败');
+        applyConfirmationSettings(result);
+      } catch (error) {
+        message.textContent = error.message;
+      }
+    }
+
+    async function saveConfirmationSetting(key, value, control) {
+      control.disabled = true;
+      try {
+        const response = await fetch('/settings?token=' + encodeURIComponent(token), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ [key]: value })
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || '保存设置失败');
+        applyConfirmationSettings(result);
+        message.textContent = '设置已保存到电脑';
+      } catch (error) {
+        control.checked = !value;
+        message.textContent = error.message;
+      } finally {
+        control.disabled = false;
+      }
+    }
+
+    settingsToggle.addEventListener('click', event => {
+      event.stopPropagation();
+      const opening = settingsPopover.hidden;
+      settingsPopover.hidden = !opening;
+      settingsToggle.setAttribute('aria-expanded', String(opening));
+    });
+    settingsPopover.addEventListener('click', event => event.stopPropagation());
+    document.addEventListener('click', () => {
+      settingsPopover.hidden = true;
+      settingsToggle.setAttribute('aria-expanded', 'false');
+    });
+    confirmEnter.addEventListener('change', () => {
+      saveConfirmationSetting('confirm_enter', confirmEnter.checked, confirmEnter);
+    });
+    confirmSend.addEventListener('change', () => {
+      saveConfirmationSetting('confirm_send', confirmSend.checked, confirmSend);
+    });
+
+    document.querySelectorAll('button').forEach(button => {
+      const release = () => setTimeout(() => button.classList.remove('is-pressed'), 55);
+      button.addEventListener('pointerdown', () => {
+        if (!button.disabled) button.classList.add('is-pressed');
+      });
+      button.addEventListener('pointerup', release);
+      button.addEventListener('pointercancel', release);
+      button.addEventListener('pointerleave', release);
+    });
+
+    function resetSendConfirmation() {
+      clearTimeout(sendConfirmationTimer);
+      sendConfirmationTimer = null;
+      send.classList.remove('confirming');
+      send.setAttribute('aria-pressed', 'false');
+      sendLabel.textContent = '发送到电脑';
+    }
+
+    function resetEnterConfirmation() {
+      clearTimeout(enterConfirmationTimer);
+      enterConfirmationTimer = null;
+      enter.classList.remove('confirming');
+      enter.setAttribute('aria-pressed', 'false');
+      enterLabel.textContent = '按下回车';
+    }
+
+    document.getElementById('clear').addEventListener('click', () => {
+      resetSendConfirmation();
+      resetEnterConfirmation();
+      if (!text.value) {
+        message.textContent = '文字区已经是空的';
+        return;
+      }
+      clearedSnapshot = {
+        value: text.value,
+        start: text.selectionStart ?? text.value.length,
+        end: text.selectionEnd ?? text.value.length
+      };
+      text.value = '';
+      undo.disabled = false;
+      message.textContent = '已清空，可撤销';
+      text.focus();
+    });
+
+    undo.addEventListener('click', () => {
+      resetSendConfirmation();
+      resetEnterConfirmation();
+      if (!clearedSnapshot) return;
+      text.value = clearedSnapshot.value;
+      text.focus();
+      text.setSelectionRange(clearedSnapshot.start, clearedSnapshot.end);
+      clearedSnapshot = null;
+      undo.disabled = true;
+      message.textContent = '已撤销清空';
+    });
+
+    text.addEventListener('input', () => {
+      resetSendConfirmation();
+      resetEnterConfirmation();
+      if (clearedSnapshot && text.value) {
+        clearedSnapshot = null;
+        undo.disabled = true;
+      }
+    });
+
+    document.getElementById('copy').addEventListener('click', async () => {
+      resetSendConfirmation();
+      resetEnterConfirmation();
+      if (!text.value) {
+        message.textContent = '没有可以复制的文字';
+        return;
+      }
+      try {
+        await navigator.clipboard.writeText(text.value);
+      } catch (_) {
+        text.focus();
+        text.select();
+        document.execCommand('copy');
+      }
+      message.textContent = '已复制，可粘贴到其他手机应用';
+    });
+
+    send.addEventListener('click', async () => {
+      resetEnterConfirmation();
+      if (!text.value) {
+        resetSendConfirmation();
+        message.textContent = '请先输入文字';
+        text.focus();
+        return;
+      }
+      if (confirmationSettings.confirm_send && !send.classList.contains('confirming')) {
+        send.classList.add('confirming');
+        send.setAttribute('aria-pressed', 'true');
+        sendLabel.textContent = '确认吗？';
+        message.textContent = '再次点击才会发送到电脑';
+        sendConfirmationTimer = setTimeout(resetSendConfirmation, 4500);
+        return;
+      }
+
+      clearTimeout(sendConfirmationTimer);
+      const sentSnapshot = {
+        value: text.value,
+        start: text.selectionStart ?? text.value.length,
+        end: text.selectionEnd ?? text.value.length
+      };
+      send.disabled = true;
+      message.textContent = '正在发送……';
+      try {
+        const response = await fetch('/send?token=' + encodeURIComponent(token), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: text.value })
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || '发送失败');
+        text.value = '';
+        clearedSnapshot = sentSnapshot;
+        undo.disabled = false;
+        message.textContent = '已发送；电脑未收到时可点撤销恢复';
+        text.blur();
+      } catch (error) {
+        message.textContent = error.message;
+      } finally {
+        send.disabled = false;
+        resetSendConfirmation();
+      }
+    });
+
+    enter.addEventListener('click', async () => {
+      resetSendConfirmation();
+      if (confirmationSettings.confirm_enter && !enter.classList.contains('confirming')) {
+        enter.classList.add('confirming');
+        enter.setAttribute('aria-pressed', 'true');
+        enterLabel.textContent = '确认吗？';
+        message.textContent = '再次点击才会在电脑按下回车';
+        enterConfirmationTimer = setTimeout(resetEnterConfirmation, 4500);
+        return;
+      }
+
+      clearTimeout(enterConfirmationTimer);
+      enter.disabled = true;
+      message.textContent = '正在按下回车……';
+      try {
+        const response = await fetch('/enter?token=' + encodeURIComponent(token), {
+          method: 'POST'
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || '回车发送失败');
+        message.textContent = '已在电脑按下回车';
+      } catch (error) {
+        message.textContent = error.message;
+      } finally {
+        enter.disabled = false;
+        resetEnterConfirmation();
+      }
+    });
+
+    function insertAtCursor(value) {
+      const start = text.selectionStart ?? text.value.length;
+      const end = text.selectionEnd ?? start;
+      text.setRangeText(value, start, end, 'end');
+      text.dispatchEvent(new Event('input', { bubbles: true }));
+      if (document.visibilityState === 'visible') text.focus();
+    }
+
+    const delay = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
+
+    async function receiveLoop() {
+      while (true) {
+        try {
+          const params = new URLSearchParams({
+            token,
+            after: String(receiveState.after || 0),
+            session: receiveState.session || ''
+          });
+          const response = await fetch('/receive?' + params.toString(), { cache: 'no-store' });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || '连接失败');
+
+          status.textContent = '● 已连接到电脑';
+          if (result.session !== receiveState.session) receiveState.after = 0;
+          for (const item of result.messages) {
+            insertAtCursor(item.text);
+            receiveState.after = item.id;
+            message.textContent = '电脑文字已插入';
+          }
+          receiveState.session = result.session;
+          localStorage.setItem(stateKey, JSON.stringify(receiveState));
+        } catch (error) {
+          status.textContent = '● 连接已断开，正在重试';
+          await delay(1500);
+        }
+      }
+    }
+
+    loadConfirmationSettings();
+    receiveLoop();
+  </script>
+</body>
+</html>
