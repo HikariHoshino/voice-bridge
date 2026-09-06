@@ -20,10 +20,20 @@ from socketserver import TCPServer
 from tkinter import messagebox, ttk
 from urllib.parse import parse_qs, urlparse
 
+LOCAL_DEPS = Path(__file__).resolve().parent / ".deps"
+if LOCAL_DEPS.is_dir() and str(LOCAL_DEPS) not in sys.path:
+    sys.path.insert(0, str(LOCAL_DEPS))
+
 import qrcode
 import pystray
 import win32clipboard
 from PIL import Image, ImageTk
+
+try:
+    from desktop_peer import DesktopPeerNode, PeerInfo
+except ImportError:
+    DesktopPeerNode = None
+    PeerInfo = None
 
 
 APP_NAME = "声桥"
@@ -44,6 +54,7 @@ DEFAULT_SETTINGS = {
     "confirm_enter": True,
     "confirm_send": False,
     "show_desktop_to_phone": True,
+    "legacy_web_enabled": False,
 }
 THEMES = {
     "light": {
@@ -144,8 +155,9 @@ def load_settings(config_file: Path = CONFIG_FILE) -> dict:
     for key in ("confirm_enter", "confirm_send"):
         if isinstance(data.get(key), bool):
             settings[key] = data[key]
-    if isinstance(data.get("show_desktop_to_phone"), bool):
-        settings["show_desktop_to_phone"] = data["show_desktop_to_phone"]
+    for key in ("show_desktop_to_phone", "legacy_web_enabled"):
+        if isinstance(data.get(key), bool):
+            settings[key] = data[key]
     count = data.get("character_count")
     if isinstance(count, int) and not isinstance(count, bool) and count >= 0:
         settings["character_count"] = count
@@ -197,6 +209,20 @@ def enable_dpi_awareness() -> None:
             ctypes.windll.user32.SetProcessDPIAware()
         except (AttributeError, OSError):
             pass
+
+
+def packaged_self_test() -> None:
+    if getattr(sys, "frozen", False):
+        bundle = Path(sys._MEIPASS)
+        if not (bundle / "_tcl_data" / "init.tcl").is_file():
+            raise RuntimeError("Tcl 脚本库未打包")
+        if not (bundle / "_tk_data" / "tk.tcl").is_file():
+            raise RuntimeError("Tk 脚本库未打包")
+    interpreter = tk.Tcl()
+    if not interpreter.eval("info patchlevel").startswith("8.6"):
+        raise RuntimeError("Tcl/Tk 运行库版本无效")
+    if DesktopPeerNode is None:
+        raise RuntimeError("Android 对等网络组件未打包")
 
 
 def windows_colorref(color: str) -> int:
@@ -588,12 +614,14 @@ class BridgeServer(ThreadingHTTPServer):
         status_callback=None,
         enter_callback=None,
         config_file: Path = CONFIG_FILE,
+        legacy_web_enabled: bool = True,
     ):
         self.token = token
         self.input_callback = input_callback
         self.status_callback = status_callback or (lambda _message: None)
         self.enter_callback = enter_callback or (lambda: None)
         self.config_file = config_file
+        self.legacy_web_enabled = legacy_web_enabled
         page = WEB_PAGE.read_text(encoding="utf-8")
         icon = base64.b64encode(ICON_PNG.read_bytes()).decode("ascii")
         self.page = page.replace("{{APP_ICON_BASE64}}", icon).encode("utf-8")
@@ -631,6 +659,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def do_GET(self) -> None:
+        if not self.server.legacy_web_enabled:
+            self._json_response(503, {"ok": False, "error": "旧网页入口未启用"})
+            return
         parsed = urlparse(self.path)
         if not self._authorized(parsed.query):
             self._json_response(403, {"ok": False, "error": "配对链接无效"})
@@ -681,6 +712,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self.wfile.write(self.server.page)
 
     def do_POST(self) -> None:
+        if not self.server.legacy_web_enabled:
+            self._json_response(503, {"ok": False, "error": "旧网页入口未启用"})
+            return
         parsed = urlparse(self.path)
         if parsed.path not in {"/send", "/enter", "/settings"} or not self._authorized(parsed.query):
             self._json_response(403, {"ok": False, "error": "配对链接无效"})
@@ -1296,6 +1330,9 @@ class BridgeApp:
         self.closing = False
         self.server = None
         self.thread = None
+        self.peer_node = None
+        self.peer_devices = []
+        self.selected_peer_id = None
         self.tray_icon = None
         self.tray_actions = queue.Queue()
         self.qr_window = None
@@ -1345,6 +1382,7 @@ class BridgeApp:
                 lambda text: self._inject_and_count(injector, text),
                 self.set_status,
                 injector.press_enter,
+                legacy_web_enabled=self.settings["legacy_web_enabled"],
             )
         except Exception as error:
             self.init_results.put((False, error))
@@ -1385,6 +1423,7 @@ class BridgeApp:
         self._show_centered_window(self.root)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
+        self._start_peer_node()
         self.root.after(100, self._poll_tray_actions)
 
     def _inject_and_count(self, injector: WindowsUnicodeInput, text: str) -> None:
@@ -1560,8 +1599,9 @@ class BridgeApp:
         connection_header.pack(fill="x")
         connection_title = ttk.Frame(connection_header, style="Card.TFrame")
         connection_title.pack(side="left")
-        ttk.Label(connection_title, text="手机连接", style="CardTitle.TLabel").pack(anchor="w")
-        ttk.Label(connection_title, text="已配对手机可直接打开收藏页面", style="Muted.TLabel").pack(anchor="w", pady=(2, 0))
+        ttk.Label(connection_title, text="设备连接", style="CardTitle.TLabel").pack(anchor="w")
+        self.peer_summary = tk.StringVar(value="正在发现局域网中的声桥设备")
+        ttk.Label(connection_title, textvariable=self.peer_summary, style="Muted.TLabel").pack(anchor="w", pady=(2, 0))
         self.qr_toggle_button = self._button(
             connection_header,
             self.toggle_qr,
@@ -1642,6 +1682,20 @@ class BridgeApp:
         self.desktop_text.bind("<Control-Return>", self._handle_control_enter)
         send_row = ttk.Frame(self.transfer_content, style="Card.TFrame")
         send_row.pack(fill="x")
+        peer_row = ttk.Frame(self.transfer_content, style="Card.TFrame")
+        peer_row.pack(fill="x", pady=(0, 10))
+        ttk.Label(peer_row, text="目标设备", style="Muted.TLabel").pack(side="left")
+        self.peer_choice = tk.StringVar(value="旧网页手机")
+        self.peer_selector = ttk.Combobox(
+            peer_row,
+            textvariable=self.peer_choice,
+            state="readonly",
+            values=("旧网页手机",),
+            style="TCombobox",
+            width=28,
+        )
+        self.peer_selector.pack(side="right", fill="x", expand=True, padx=(12, 0))
+        self.peer_selector.bind("<<ComboboxSelected>>", self._select_peer)
         self.shortcut_hint = tk.StringVar()
         self._update_shortcut_hint()
         ttk.Label(send_row, textvariable=self.shortcut_hint, style="Muted.TLabel").pack(side="left")
@@ -1749,6 +1803,7 @@ class BridgeApp:
                 old_server.status_callback,
                 old_server.enter_callback,
                 old_server.config_file,
+                old_server.legacy_web_enabled,
             )
             replacement.accepting_phone_text = old_server.accepting_phone_text
             with old_server._phone_condition:
@@ -1769,6 +1824,8 @@ class BridgeApp:
         self.lan_ip = current_ip
         self.server = replacement
         self.thread = new_thread
+        if getattr(self, "peer_node", None) is not None:
+            self.peer_node.refresh_network(current_ip)
         self.refresh_pairing()
         self.set_status(f"已切换到当前局域网：{current_ip}")
         threading.Thread(
@@ -1789,6 +1846,9 @@ class BridgeApp:
     def toggle_qr(self) -> None:
         if self.qr_window is not None and self.qr_window.winfo_exists():
             self.close_qr()
+            return
+        if not self.server.legacy_web_enabled:
+            self.set_status("旧网页入口已关闭；可在设置中启用")
             return
         self._refresh_network_binding()
 
@@ -1862,10 +1922,121 @@ class BridgeApp:
         if not text:
             self.set_status("请先输入要发给手机的文字")
             return "break"
+        if self.selected_peer_id and self.peer_node is not None:
+            peer = next((item for item in self.peer_devices if item.id == self.selected_peer_id), None)
+            if peer is None or peer.state != "connected":
+                self.set_status("目标设备尚未建立可靠连接")
+                return "break"
+            self.send_phone_button.set_enabled(False)
+            self.set_status(f"正在发送到 {peer.name}…")
+            threading.Thread(
+                target=self._send_to_peer,
+                args=(peer, text),
+                daemon=True,
+            ).start()
+            return "break"
+        if not self.server.legacy_web_enabled:
+            self.set_status("旧网页入口已关闭；请选择已连接的原生设备")
+            return "break"
         self.server.queue_for_phone(text)
         self.desktop_text.delete("1.0", "end")
-        self.set_status(f"已发送 {len(text)} 个字符到手机")
+        self.set_status(f"已发送 {len(text)} 个字符到旧网页手机")
         return "break"
+
+    def _send_to_peer(self, peer, text: str) -> None:
+        try:
+            result = self.peer_node.send_text(peer.id, text)
+        except Exception as error:
+            result = {"code": "unreachable", "detail": f"发送失败：{error}"}
+        if not self.closing:
+            self.root.after(0, self._finish_peer_send, peer, text, result)
+
+    def _finish_peer_send(self, peer, sent_text: str, result: dict) -> None:
+        self.send_phone_button.set_enabled(True)
+        if result.get("code") != "injected":
+            self.set_status(result.get("detail") or "发送失败；文字已保留")
+            return
+        current_text = self.desktop_text.get("1.0", "end-1c")
+        if current_text == sent_text:
+            self.desktop_text.delete("1.0", "end")
+        self.set_status(f"已写入 {peer.name} 的当前光标")
+
+    def _start_peer_node(self) -> None:
+        if DesktopPeerNode is None:
+            self.set_status("Android 对等组件未安装，旧网页模式仍可用")
+            return
+        try:
+            injector = WindowsUnicodeInput()
+            self.peer_node = DesktopPeerNode(
+                CONFIG_FILE.parent,
+                self.lan_ip,
+                lambda text: self._inject_and_count(injector, text),
+                self._approve_peer_pair,
+                self._peer_devices_changed,
+                lambda: self.server.accepting_phone_text,
+            )
+            self.peer_node.start()
+        except Exception as error:
+            self.peer_node = None
+            self.set_status(f"Android 对等服务启动失败：{error}")
+
+    def _approve_peer_pair(self, peer, code: str, incoming: bool) -> bool:
+        result = queue.Queue(maxsize=1)
+        def ask() -> None:
+            action = "请求与电脑配对" if incoming else "将在另一端显示相同短码"
+            approved = messagebox.askyesno(
+                "确认设备配对",
+                f"{peer.name} {action}\n\n配对短码：{code[:3]} {code[3:]}\n\n只有两端短码完全一致时才确认。",
+                parent=self.root,
+            )
+            result.put(approved)
+        self.root.after(0, ask)
+        try:
+            return result.get(timeout=60)
+        except queue.Empty:
+            return False
+
+    def _peer_devices_changed(self, peers) -> None:
+        if not self.closing:
+            self.root.after(0, self._apply_peer_devices, peers)
+
+    def _apply_peer_devices(self, peers) -> None:
+        self.peer_devices = peers
+        labels = ["旧网页手机"]
+        label_to_id = {}
+        type_names = {"phone": "手机", "tablet": "平板", "computer": "电脑"}
+        state_names = {
+            "unpaired": "未配对", "pairing": "正在配对", "connecting": "正在连接",
+            "connected": "已连接", "retrying": "断开重试中", "paused": "已暂停",
+        }
+        for peer in peers:
+            label = f"{peer.name} · {type_names.get(peer.device_type, '设备')} · {state_names.get(peer.state, peer.state)}"
+            labels.append(label)
+            label_to_id[label] = peer.id
+        self.peer_label_to_id = label_to_id
+        if hasattr(self, "peer_selector"):
+            self.peer_selector.configure(values=tuple(labels))
+        if self.selected_peer_id and not any(item.id == self.selected_peer_id for item in peers):
+            self.selected_peer_id = None
+            self.peer_choice.set("旧网页手机")
+        connected = sum(item.state == "connected" for item in peers)
+        self.peer_summary.set(f"发现 {len(peers)} 台设备，{connected} 台已连接；二维码为旧网页兼容入口")
+
+    def _select_peer(self, _event=None) -> None:
+        label = self.peer_choice.get()
+        self.selected_peer_id = getattr(self, "peer_label_to_id", {}).get(label)
+        if self.selected_peer_id is None or self.peer_node is None:
+            return
+        peer = next((item for item in self.peer_devices if item.id == self.selected_peer_id), None)
+        if peer is not None and not peer.trusted:
+            threading.Thread(target=self._pair_selected_peer, args=(peer,), daemon=True).start()
+
+    def _pair_selected_peer(self, peer) -> None:
+        try:
+            result = self.peer_node.pair(peer.id)
+            self.set_status(result.get("detail") or ("配对成功" if result.get("ok") else "配对失败"))
+        except Exception as error:
+            self.set_status(f"配对失败：{error}")
 
     def toggle_transfer_panel(self) -> None:
         self.transfer_expanded = not self.transfer_expanded
@@ -2013,6 +2184,9 @@ class BridgeApp:
         self.settings_show_transfer = tk.BooleanVar(
             value=self.settings["show_desktop_to_phone"]
         )
+        self.settings_legacy_web = tk.BooleanVar(
+            value=self.settings["legacy_web_enabled"]
+        )
         self.settings_confirm_enter = tk.BooleanVar(
             value=self.settings["confirm_enter"]
         )
@@ -2039,6 +2213,11 @@ class BridgeApp:
             interface_card,
             "显示累计输入字符数",
             self.settings_show_count,
+        )
+        self._settings_switch_row(
+            interface_card,
+            "启用旧网页兼容入口（HTTP）",
+            self.settings_legacy_web,
         )
 
         count_row = ttk.Frame(interface_card, style="Card.TFrame")
@@ -2157,11 +2336,15 @@ class BridgeApp:
             "send_mode": self.settings_send_mode.get(),
             "show_char_count": self.settings_show_count.get(),
             "show_desktop_to_phone": self.settings_show_transfer.get(),
+            "legacy_web_enabled": self.settings_legacy_web.get(),
             "confirm_enter": self.settings_confirm_enter.get(),
             "confirm_send": self.settings_confirm_send.get(),
         }
         update_config(values)
         self.settings.update(values)
+        self.server.legacy_web_enabled = self.settings["legacy_web_enabled"]
+        if not self.server.legacy_web_enabled and self.qr_window is not None:
+            self.close_qr()
         self._update_shortcut_hint()
         if self.settings["show_char_count"]:
             if not self.character_count_label.winfo_manager():
@@ -2405,6 +2588,8 @@ class BridgeApp:
         if self.server is not None:
             self.server.shutdown()
             self.server.server_close()
+        if self.peer_node is not None:
+            self.peer_node.stop()
         self.root.destroy()
 
     def run(self) -> None:
@@ -2412,6 +2597,17 @@ class BridgeApp:
 
 
 if __name__ == "__main__":
+    if "--self-test" in sys.argv:
+        try:
+            packaged_self_test()
+        except Exception as error:
+            log_file = os.environ.get("VOICEBRIDGE_SELF_TEST_LOG")
+            if log_file:
+                Path(log_file).write_text(
+                    f"{type(error).__name__}: {error}\n", encoding="utf-8"
+                )
+            os._exit(1)
+        os._exit(0)
     enable_dpi_awareness()
     instance_handles = acquire_single_instance()
     if instance_handles is not None:

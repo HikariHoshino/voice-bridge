@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">声桥</string>
+    <string name="accessibility_description">仅在已配对设备发送文字时，将原始文字插入当前可编辑光标；不读取密码框，不使用剪贴板。</string>
+</resources>

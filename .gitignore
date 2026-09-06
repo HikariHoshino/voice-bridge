@@ -12,6 +12,11 @@ env/
 
 /build*/
 /dist*/
+/release-*/
+/android/local.properties
+/android/.gradle/
+/android/app/build/
+/.deps/
 
 /ui-check.png
 /final-ui-check.png

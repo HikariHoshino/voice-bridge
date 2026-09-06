@@ -1,6 +1,8 @@
 import ctypes
+import base64
 import json
 import re
+import tempfile
 import threading
 import unittest
 import win32clipboard
@@ -23,6 +25,7 @@ from app import (
     update_config,
     windows_colorref,
 )
+from desktop_peer import DesktopPeerNode, PeerIdentity, TrustStore, canonical_payload, message_auth, pairing_code
 
 
 def replay_in_smart_markdown_editor(inputs, initial_text=""):
@@ -100,6 +103,12 @@ class BridgeServerTests(unittest.TestCase):
         with self.assertRaises(HTTPError) as error:
             urlopen(self.base_url + "/", timeout=2)
         self.assertEqual(error.exception.code, 403)
+
+    def test_disabled_legacy_web_rejects_even_a_valid_pairing_token(self):
+        self.server.legacy_web_enabled = False
+        with self.assertRaises(HTTPError) as error:
+            urlopen(self.base_url + "/?token=test-token", timeout=2)
+        self.assertEqual(error.exception.code, 503)
 
     def test_phone_page_embeds_the_same_app_icon(self):
         page = self.server.page.decode("utf-8")
@@ -220,6 +229,7 @@ class NetworkRebindTests(unittest.TestCase):
         server.status_callback = lambda _message: None
         server.enter_callback = lambda: None
         server.config_file = Path("test-config.json")
+        server.legacy_web_enabled = False
         server.accepting_phone_text = False
         server._phone_condition = threading.Condition()
         server._phone_messages = [{"id": 1, "text": "待发送"}]
@@ -303,6 +313,7 @@ class PairingTokenTests(unittest.TestCase):
             self.assertTrue(settings["confirm_enter"])
             self.assertFalse(settings["confirm_send"])
             self.assertFalse(settings["show_desktop_to_phone"])
+            self.assertFalse(settings["legacy_web_enabled"])
             self.assertEqual(load_or_create_token(config_file), token)
         finally:
             config_file.unlink(missing_ok=True)
@@ -479,6 +490,7 @@ class DesktopFeatureTests(unittest.TestCase):
         self.assertIn('self.state = "pressed"', source)
         self.assertIn("class ToggleSwitch(tk.Canvas)", source)
         self.assertIn("self.transfer_expanded = False", source)
+        self.assertIn("target=self._send_to_peer", source)
         self.assertIn('"show_desktop_to_phone": True', source)
         self.assertNotIn("ttk.Button(", source)
         for palette in THEMES.values():
@@ -489,6 +501,53 @@ class DesktopFeatureTests(unittest.TestCase):
                 "secondary_pressed",
             ):
                 self.assertIn(key, palette)
+
+
+class PeerProtocolTests(unittest.TestCase):
+    def test_windows_peer_secret_is_dpapi_protected_at_rest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "trust.json"
+            store = TrustStore(path)
+            store.put("peer-1", "aa" * 32, "fixed-secret-for-test")
+
+            raw = path.read_text(encoding="utf-8")
+            self.assertNotIn("fixed-secret-for-test", raw)
+            self.assertEqual(store.get("peer-1")["secret"], "fixed-secret-for-test")
+
+    def test_pairing_code_matches_android_reference_vector(self):
+        self.assertEqual(pairing_code("aa", "bb", "fixed-nonce-123456"), "550877")
+        self.assertEqual(pairing_code("bb", "aa", "fixed-nonce-123456"), "550877")
+
+    def test_message_auth_preserves_exact_markdown_and_formatting(self):
+        secret = base64.b64encode(bytes(range(32))).decode("ascii").rstrip("=")
+        text = "1. first\n   2. second\r\n\t终"
+        signature = message_auth(secret, "message-123456789", text)
+        self.assertEqual(signature, "sAQ/ITqSgZxinwC6QtkjccQ7l55xHH/3LMRJOOsGOmc")
+        self.assertNotEqual(signature, message_auth(secret, "message-123456789", text.replace("\n", " ")))
+
+    def test_canonical_payload_matches_android_order_and_boolean_case(self):
+        payload = canonical_payload({"version": 2, "ok": True, "type": "PING", "signature": "ignored"})
+        self.assertEqual(payload, b"2:ok4:true4:type4:PING7:version1:2")
+
+    def test_embedded_certificate_signature_proves_client_identity(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            identity = PeerIdentity(Path(directory))
+            message = {
+                "type": "PING",
+                "version": 2,
+                "peerId": identity.id,
+                "messageId": "message-123456789",
+                "text": "",
+                "auth": "test",
+                "fingerprint": identity.fingerprint,
+                "certificate": identity.encoded_certificate,
+            }
+            message["signature"] = identity.sign(canonical_payload(message))
+            self.assertEqual(DesktopPeerNode._verified_fingerprint(message), identity.fingerprint)
+            message["text"] = "tampered"
+            self.assertIsNone(DesktopPeerNode._verified_fingerprint(message))
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@
 
 - Windows 10 或 Windows 11
 - Python 3.13
+- JDK 17 或 21、Android SDK 36
 - Git
 
 程序使用 Windows 专用 API，测试和构建应在 Windows 上运行。
@@ -43,11 +44,33 @@ python -m unittest -v
 
 GitHub Actions 使用 `windows-latest` 和 Python 3.13 运行同一组测试。
 
+Android 门禁：
+
+```powershell
+cd android
+.\gradlew.bat testDebugUnitTest lintDebug assembleDebug
+```
+
+Android 测试额外覆盖原格式选区拼接、跨语言配对/HMAC 向量，以及源码中不存在输入法服务和剪贴板 API。
+
 ## 打包
 
 ```powershell
 python -m PyInstaller --noconfirm --clean VoiceBridge.spec
 ```
+
+当前主机若提示 Tk 安装损坏，构建后需运行 `tools/repair_tk_bundle.py`，从已验证且 `python313.dll` 哈希一致的 v1 便携包补齐 Tcl/Tk；`VoiceBridge.spec` 的运行时钩子会把解释器指向包内脚本库。最终应在非受限桌面环境执行 `VoiceBridge.exe --self-test`，退出码必须为 0。受限沙箱可能阻止 Tcl 原生 DLL 读取即使 Python 可见的 `init.tcl`，不能把这种失败误判为文件缺失。
+
+如果 PyInstaller 报告宿主 Python 缺少 Tcl 脚本库，可从同一 `python313.dll` 哈希的已验证 v1 便携包恢复 Tk 文件：
+
+```powershell
+python tools\repair_tk_bundle.py `
+  dist-network-current\VoiceBridge\_internal `
+  dist-v2-alpha1\VoiceBridge\_internal
+dist-v2-alpha1\VoiceBridge\VoiceBridge.exe --self-test
+```
+
+脚本会先比较 Python DLL 哈希，不一致时拒绝混用二进制运行库。
 
 成功后产物位于：
 

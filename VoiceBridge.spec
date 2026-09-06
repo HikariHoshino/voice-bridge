@@ -3,17 +3,17 @@
 
 a = Analysis(
     ["app.py"],
-    pathex=[],
+    pathex=[".deps"],
     binaries=[],
     datas=[
         ("mobile.html", "."),
         ("assets/voice-bridge.png", "assets"),
         ("assets/voice-bridge.ico", "assets"),
     ],
-    hiddenimports=[],
+    hiddenimports=["zeroconf._utils.ipaddress", "zeroconf._handlers.answers"],
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=["tools/tk_runtime_hook.py"],
     excludes=[],
     noarchive=False,
     optimize=0,
