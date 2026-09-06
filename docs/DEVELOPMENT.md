@@ -49,6 +49,14 @@ GitHub Actions 使用 `windows-latest` 和 Python 3.13 运行同一组测试。
 python -m PyInstaller --noconfirm --clean VoiceBridge.spec
 ```
 
+如果当前 Python 的 Tcl/Tk 安装被 PyInstaller 判定为损坏，可在构建后从指定旧版便携目录补齐经过验证且 Python DLL 哈希一致的运行库：
+
+```powershell
+python tools\repair_tk_bundle.py `
+  ..\voice-bridge\dist-final\VoiceBridge\_internal `
+  dist\VoiceBridge\_internal
+```
+
 成功后产物位于：
 
 ```text

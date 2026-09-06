@@ -12,6 +12,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+import traceback
 import winreg
 from ctypes import wintypes
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -34,7 +35,9 @@ RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 RUN_VALUE = "VoiceBridge"
 INSTANCE_MUTEX_NAME = r"Local\VoiceBridge.SingleInstance"
 ACTIVATION_EVENT_NAME = r"Local\VoiceBridge.ActivateExisting"
+ACTIVATION_ACK_EVENT_NAME = r"Local\VoiceBridge.ActivateExisting.Acknowledged"
 CONFIG_LOCK = threading.RLock()
+CRASH_LOG_FILE = CONFIG_FILE.with_name("crash.log")
 DEFAULT_SETTINGS = {
     "close_action": "ask",
     "send_mode": "ctrl_enter",
@@ -206,7 +209,7 @@ def windows_colorref(color: str) -> int:
     return red | (green << 8) | (blue << 16)
 
 
-def acquire_single_instance() -> tuple[int, int] | None:
+def acquire_single_instance() -> tuple[int, int, int] | None:
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.CreateMutexW.argtypes = (ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR)
     kernel32.CreateMutexW.restype = wintypes.HANDLE
@@ -215,6 +218,8 @@ def acquire_single_instance() -> tuple[int, int] | None:
     kernel32.OpenEventW.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR)
     kernel32.OpenEventW.restype = wintypes.HANDLE
     kernel32.SetEvent.argtypes = (wintypes.HANDLE,)
+    kernel32.ResetEvent.argtypes = (wintypes.HANDLE,)
+    kernel32.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
     kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
 
     mutex = kernel32.CreateMutexW(None, False, INSTANCE_MUTEX_NAME)
@@ -222,24 +227,74 @@ def acquire_single_instance() -> tuple[int, int] | None:
         raise ctypes.WinError(ctypes.get_last_error())
     if ctypes.get_last_error() == 183:
         event = kernel32.OpenEventW(0x0002, False, ACTIVATION_EVENT_NAME)
+        acknowledged = False
         if event:
+            acknowledgement = kernel32.OpenEventW(
+                0x00100002, False, ACTIVATION_ACK_EVENT_NAME
+            )
+            if acknowledgement:
+                kernel32.ResetEvent(acknowledgement)
             kernel32.SetEvent(event)
+            if acknowledgement:
+                acknowledged = kernel32.WaitForSingleObject(
+                    acknowledgement, 1500
+                ) == 0
+                kernel32.CloseHandle(acknowledgement)
             kernel32.CloseHandle(event)
         kernel32.CloseHandle(mutex)
+        if not acknowledged:
+            ctypes.windll.user32.MessageBoxW(
+                None,
+                "声桥已经在后台运行，可能是另一个版本。\n"
+                "请从系统托盘打开它；若要切换版本，请先在托盘中彻底退出旧实例。",
+                APP_NAME,
+                0x40,
+            )
         return None
 
     event = kernel32.CreateEventW(None, True, False, ACTIVATION_EVENT_NAME)
     if not event:
         kernel32.CloseHandle(mutex)
         raise ctypes.WinError(ctypes.get_last_error())
-    return mutex, event
+    acknowledgement = kernel32.CreateEventW(
+        None, True, False, ACTIVATION_ACK_EVENT_NAME
+    )
+    if not acknowledgement:
+        kernel32.CloseHandle(event)
+        kernel32.CloseHandle(mutex)
+        raise ctypes.WinError(ctypes.get_last_error())
+    return mutex, event, acknowledgement
 
 
-def release_single_instance(handles: tuple[int, int]) -> None:
+def release_single_instance(handles: tuple[int, ...]) -> None:
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
-    kernel32.CloseHandle(handles[1])
-    kernel32.CloseHandle(handles[0])
+    for handle in reversed(handles):
+        kernel32.CloseHandle(handle)
+
+
+def report_fatal_error(
+    error: Exception, log_file: Path = CRASH_LOG_FILE
+) -> None:
+    try:
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        with log_file.open("a", encoding="utf-8") as stream:
+            stream.write(
+                f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] "
+                f"{type(error).__name__}: {error}\n{traceback.format_exc()}\n"
+            )
+    except OSError:
+        pass
+    try:
+        ctypes.windll.user32.MessageBoxW(
+            None,
+            f"声桥发生错误，无法继续运行：\n{error}\n\n"
+            f"诊断记录：{log_file}",
+            "声桥启动失败",
+            0x10,
+        )
+    except (AttributeError, OSError):
+        pass
 
 
 class WindowsUnicodeInput:
@@ -774,8 +829,14 @@ class BridgeHandler(BaseHTTPRequestHandler):
         return
 
 
-def choose_lan_ip(addresses: list[str]) -> str | None:
+def choose_lan_ip(
+    addresses: list[str], gateway_addresses: set[str] | None = None
+) -> str | None:
     unique = list(dict.fromkeys(addresses))
+    if gateway_addresses:
+        routed = [address for address in unique if address in gateway_addresses]
+        if routed:
+            unique = routed
     preferred_networks = (
         ipaddress.ip_network("192.168.0.0/16"),
         ipaddress.ip_network("172.16.0.0/12"),
@@ -788,12 +849,53 @@ def choose_lan_ip(addresses: list[str]) -> str | None:
     return None
 
 
+def _registry_strings(key, *names: str) -> list[str]:
+    for name in names:
+        try:
+            value, _kind = winreg.QueryValueEx(key, name)
+        except OSError:
+            continue
+        values = [value] if isinstance(value, str) else value
+        if isinstance(values, (list, tuple)):
+            cleaned = [item for item in values if isinstance(item, str) and item]
+            if cleaned:
+                return cleaned
+    return []
+
+
+def gateway_lan_addresses() -> set[str]:
+    """Return IPv4 addresses assigned to adapters with a default gateway."""
+    path = r"SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces"
+    addresses = set()
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, path) as interfaces:
+            count = winreg.QueryInfoKey(interfaces)[0]
+            for index in range(count):
+                try:
+                    with winreg.OpenKey(interfaces, winreg.EnumKey(interfaces, index)) as adapter:
+                        gateways = _registry_strings(
+                            adapter, "DhcpDefaultGateway", "DefaultGateway"
+                        )
+                        if not any(item != "0.0.0.0" for item in gateways):
+                            continue
+                        for address in _registry_strings(
+                            adapter, "DhcpIPAddress", "IPAddress"
+                        ):
+                            if address != "0.0.0.0":
+                                addresses.add(address)
+                except OSError:
+                    continue
+    except OSError:
+        return set()
+    return addresses
+
+
 def local_ip() -> str:
     hostname_addresses = [
         item[4][0]
         for item in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)
     ]
-    preferred = choose_lan_ip(hostname_addresses)
+    preferred = choose_lan_ip(hostname_addresses, gateway_lan_addresses())
     if preferred:
         return preferred
 
@@ -805,6 +907,50 @@ def local_ip() -> str:
         return "127.0.0.1"
     finally:
         sock.close()
+
+
+def active_ipv4_addresses() -> set[str]:
+    addresses = {"127.0.0.1"}
+    try:
+        addresses.update(
+            item[4][0]
+            for item in socket.getaddrinfo(
+                socket.gethostname(), None, socket.AF_INET
+            )
+        )
+    except OSError:
+        pass
+    addresses.update(gateway_lan_addresses())
+    return addresses
+
+
+def load_saved_lan_ip(config_file: Path = CONFIG_FILE) -> str | None:
+    value = _read_config(config_file).get("lan_ip")
+    if not isinstance(value, str):
+        return None
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        return None
+    if address.version != 4 or address.is_unspecified or address.is_multicast:
+        return None
+    return str(address)
+
+
+def startup_lan_binding(
+    config_file: Path = CONFIG_FILE,
+) -> tuple[str, str, bool]:
+    """Return displayed IP, bind IP and whether the saved address is usable."""
+    saved_ip = load_saved_lan_ip(config_file)
+    if saved_ip is not None:
+        available = saved_ip in active_ipv4_addresses()
+        return saved_ip, saved_ip if available else "127.0.0.1", available
+
+    selected_ip = local_ip()
+    available = selected_ip != "127.0.0.1"
+    if available:
+        update_config({"lan_ip": selected_ip}, config_file)
+    return selected_ip, selected_ip, available
 
 
 class RoundedCard(tk.Canvas):
@@ -1279,7 +1425,7 @@ class ToggleSwitch(tk.Canvas):
 
 
 class BridgeApp:
-    def __init__(self, activation_event=None) -> None:
+    def __init__(self, activation_event=None, activation_ack_event=None) -> None:
         self.settings = load_settings()
         self.theme_name = self.settings["theme"]
         self.palette = THEMES[self.theme_name].copy()
@@ -1305,6 +1451,7 @@ class BridgeApp:
         self.animated_buttons = []
         self.toggle_switches = []
         self.activation_event = activation_event
+        self.activation_ack_event = activation_ack_event
         self.init_results = queue.Queue(maxsize=1)
         self._configure_styles()
         self._build_loading()
@@ -1336,16 +1483,29 @@ class BridgeApp:
     def _initialize_bridge(self) -> None:
         server = None
         try:
-            lan_ip = local_ip()
+            lan_ip, bind_ip, network_address_available = startup_lan_binding()
             token = load_or_create_token()
             injector = WindowsUnicodeInput()
-            server = BridgeServer(
-                (lan_ip, DEFAULT_PORT),
-                token,
-                lambda text: self._inject_and_count(injector, text),
-                self.set_status,
-                injector.press_enter,
-            )
+            try:
+                server = BridgeServer(
+                    (bind_ip, DEFAULT_PORT),
+                    token,
+                    lambda text: self._inject_and_count(injector, text),
+                    self.set_status,
+                    injector.press_enter,
+                )
+            except OSError:
+                if bind_ip == "127.0.0.1":
+                    raise
+                bind_ip = "127.0.0.1"
+                network_address_available = False
+                server = BridgeServer(
+                    (bind_ip, DEFAULT_PORT),
+                    token,
+                    lambda text: self._inject_and_count(injector, text),
+                    self.set_status,
+                    injector.press_enter,
+                )
         except Exception as error:
             self.init_results.put((False, error))
             return
@@ -1353,7 +1513,12 @@ class BridgeApp:
         if self.closing:
             server.server_close()
             return
-        self.init_results.put((True, (lan_ip, token, server)))
+        self.init_results.put(
+            (
+                True,
+                (lan_ip, bind_ip, network_address_available, token, server),
+            )
+        )
 
     def _poll_initialization(self) -> None:
         try:
@@ -1369,7 +1534,13 @@ class BridgeApp:
             self.root.destroy()
             return
 
-        self.lan_ip, self.token, self.server = result
+        (
+            self.lan_ip,
+            self.server_bound_ip,
+            self.network_address_available,
+            self.token,
+            self.server,
+        ) = result
         self.url = self._pairing_url()
         self.qr_visible = False
         self.root.withdraw()
@@ -1377,6 +1548,10 @@ class BridgeApp:
         self.loading_frame.destroy()
         self.root.resizable(True, True)
         self._build_ui()
+        if not self.network_address_available:
+            self.status.set(
+                f"已保存地址 {self.lan_ip} 当前不可用，请打开二维码并点击“刷新地址”"
+            )
         self.root.update_idletasks()
         width = max(self.main_frame.winfo_reqwidth() + 24, 580)
         height = max(self.main_frame.winfo_reqheight() + 20, 360)
@@ -1735,7 +1910,11 @@ class BridgeApp:
         except Exception as error:
             self.set_status(f"检测当前局域网失败：{error}")
             return False
-        if current_ip == self.lan_ip:
+        if current_ip == "127.0.0.1":
+            self.set_status("当前未找到可用局域网，地址保持不变")
+            return False
+        if current_ip == self.lan_ip and current_ip == self.server_bound_ip:
+            self.set_status(f"当前地址未变化：{current_ip}")
             return False
 
         old_server = self.server
@@ -1760,17 +1939,21 @@ class BridgeApp:
                 target=replacement.serve_forever, daemon=True
             )
             new_thread.start()
+            update_config({"lan_ip": current_ip}, old_server.config_file)
         except Exception as error:
             if replacement is not None:
+                replacement.shutdown()
                 replacement.server_close()
-            self.set_status(f"切换当前局域网失败：{error}")
+            self.set_status(f"刷新当前局域网地址失败：{error}")
             return False
 
         self.lan_ip = current_ip
+        self.server_bound_ip = current_ip
+        self.network_address_available = True
         self.server = replacement
         self.thread = new_thread
         self.refresh_pairing()
-        self.set_status(f"已切换到当前局域网：{current_ip}")
+        self.set_status(f"地址已刷新并保存：{current_ip}")
         threading.Thread(
             target=self._shutdown_replaced_server,
             args=(old_server, old_thread),
@@ -1790,8 +1973,6 @@ class BridgeApp:
         if self.qr_window is not None and self.qr_window.winfo_exists():
             self.close_qr()
             return
-        self._refresh_network_binding()
-
         self.qr_visible = True
         self.qr_window = tk.Toplevel(self.root)
         self.qr_window.withdraw()
@@ -1824,17 +2005,27 @@ class BridgeApp:
             self.copy_url,
             text="复制访问地址",
             icon="copy",
-            width=142,
+            width=132,
             height=42,
             radius=15,
             outer_key="root",
         ).pack(side="left", padx=4)
         self._button(
             actions,
+            self._refresh_network_binding,
+            text="刷新地址",
+            icon="refresh",
+            width=116,
+            height=42,
+            radius=15,
+            role="primary",
+            outer_key="root",
+        ).pack(side="left", padx=4)
+        self._button(
+            actions,
             self.rotate_pairing,
             text="重新配对",
-            icon="refresh",
-            width=124,
+            width=112,
             height=42,
             radius=15,
             role="danger",
@@ -2367,9 +2558,12 @@ class BridgeApp:
             kernel32 = ctypes.windll.kernel32
             kernel32.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
             kernel32.ResetEvent.argtypes = (wintypes.HANDLE,)
+            kernel32.SetEvent.argtypes = (wintypes.HANDLE,)
             if kernel32.WaitForSingleObject(self.activation_event, 0) == 0:
                 kernel32.ResetEvent(self.activation_event)
                 self.restore_from_tray()
+                if self.activation_ack_event:
+                    kernel32.SetEvent(self.activation_ack_event)
         try:
             action = self.tray_actions.get_nowait()
         except queue.Empty:
@@ -2383,13 +2577,19 @@ class BridgeApp:
             self.root.after(100, self._poll_tray_actions)
 
     def restore_from_tray(self) -> None:
-        self._refresh_network_binding()
-        if self.tray_icon is not None:
-            self.tray_icon.stop()
-            self.tray_icon = None
         self.root.deiconify()
+        self.root.state("normal")
         self.root.lift()
         self.root.focus_force()
+        try:
+            handle = self.root.winfo_id()
+            user32 = ctypes.windll.user32
+            user32.ShowWindow.argtypes = (wintypes.HWND, ctypes.c_int)
+            user32.SetForegroundWindow.argtypes = (wintypes.HWND,)
+            user32.ShowWindow(handle, 9)
+            user32.SetForegroundWindow(handle)
+        except (AttributeError, OSError, tk.TclError):
+            pass
 
     def set_status(self, message: str) -> None:
         if not self.closing and hasattr(self, "status"):
@@ -2412,10 +2612,14 @@ class BridgeApp:
 
 
 if __name__ == "__main__":
-    enable_dpi_awareness()
-    instance_handles = acquire_single_instance()
-    if instance_handles is not None:
-        try:
-            BridgeApp(instance_handles[1]).run()
-        finally:
+    instance_handles = None
+    try:
+        enable_dpi_awareness()
+        instance_handles = acquire_single_instance()
+        if instance_handles is not None:
+            BridgeApp(instance_handles[1], instance_handles[2]).run()
+    except Exception as error:
+        report_fatal_error(error)
+    finally:
+        if instance_handles is not None:
             release_single_instance(instance_handles)

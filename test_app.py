@@ -1,5 +1,7 @@
 import ctypes
+import inspect
 import json
+import queue
 import re
 import threading
 import unittest
@@ -18,7 +20,10 @@ from app import (
     add_character_count,
     choose_lan_ip,
     load_or_create_token,
+    load_saved_lan_ip,
     load_settings,
+    report_fatal_error,
+    startup_lan_binding,
     startup_command,
     update_config,
     windows_colorref,
@@ -205,9 +210,57 @@ class BridgeServerTests(unittest.TestCase):
 
 
 class NetworkSelectionTests(unittest.TestCase):
+    def setUp(self):
+        self.config_file = Path(__file__).with_name("test-network-config.json")
+        self.config_file.unlink(missing_ok=True)
+
+    def tearDown(self):
+        self.config_file.unlink(missing_ok=True)
+
     def test_real_lan_address_is_preferred_over_virtual_adapters(self):
         addresses = ["198.18.0.1", "26.136.123.102", "192.168.10.104"]
         self.assertEqual(choose_lan_ip(addresses), "192.168.10.104")
+
+    def test_default_gateway_adapter_wins_over_host_only_virtual_network(self):
+        addresses = ["192.168.56.1", "192.168.10.104"]
+        self.assertEqual(
+            choose_lan_ip(addresses, {"192.168.10.104"}),
+            "192.168.10.104",
+        )
+
+    def test_first_selected_address_is_persisted(self):
+        with patch("app.local_ip", return_value="192.168.10.104"):
+            displayed_ip, bind_ip, available = startup_lan_binding(self.config_file)
+
+        self.assertEqual(displayed_ip, "192.168.10.104")
+        self.assertEqual(bind_ip, "192.168.10.104")
+        self.assertTrue(available)
+        self.assertEqual(load_saved_lan_ip(self.config_file), "192.168.10.104")
+
+    def test_restart_reuses_saved_address_without_selecting_another_one(self):
+        update_config({"lan_ip": "192.168.10.104"}, self.config_file)
+        with patch(
+            "app.local_ip",
+            side_effect=AssertionError("restart must not select a new address"),
+        ), patch(
+            "app.active_ipv4_addresses", return_value={"192.168.10.104"}
+        ):
+            result = startup_lan_binding(self.config_file)
+
+        self.assertEqual(result, ("192.168.10.104", "192.168.10.104", True))
+
+    def test_stale_saved_address_is_not_silently_replaced(self):
+        update_config({"lan_ip": "192.168.53.26"}, self.config_file)
+        with patch(
+            "app.local_ip",
+            side_effect=AssertionError("only manual refresh may select a new address"),
+        ), patch(
+            "app.active_ipv4_addresses", return_value={"192.168.10.104"}
+        ):
+            result = startup_lan_binding(self.config_file)
+
+        self.assertEqual(result, ("192.168.53.26", "127.0.0.1", False))
+        self.assertEqual(load_saved_lan_ip(self.config_file), "192.168.53.26")
 
 
 class NetworkRebindTests(unittest.TestCase):
@@ -230,10 +283,11 @@ class NetworkRebindTests(unittest.TestCase):
         server.bound_ip = ip
         return server
 
-    def test_reopening_rebinds_server_when_current_lan_ip_changed(self):
+    def test_manual_refresh_rebinds_and_persists_current_lan_ip(self):
         application = object.__new__(BridgeApp)
         application.closing = False
         application.lan_ip = "192.168.5.6"
+        application.server_bound_ip = "192.168.5.6"
         application.token = "test-token"
         application.server = self.fake_server("192.168.5.6")
         application.thread = None
@@ -243,7 +297,7 @@ class NetworkRebindTests(unittest.TestCase):
 
         with patch("app.local_ip", return_value="192.168.5.7"), patch(
             "app.BridgeServer", return_value=replacement
-        ) as create_server:
+        ) as create_server, patch("app.update_config") as save_config:
             changed = application._refresh_network_binding()
 
         self.assertTrue(changed)
@@ -252,12 +306,16 @@ class NetworkRebindTests(unittest.TestCase):
         self.assertFalse(replacement.accepting_phone_text)
         self.assertEqual(replacement._phone_messages, [{"id": 1, "text": "待发送"}])
         create_server.assert_called_once()
+        save_config.assert_called_once_with(
+            {"lan_ip": "192.168.5.7"}, application.server.config_file
+        )
         application.refresh_pairing.assert_called_once_with()
 
-    def test_reopening_keeps_server_when_lan_ip_is_unchanged(self):
+    def test_manual_refresh_keeps_server_when_lan_ip_is_unchanged(self):
         application = object.__new__(BridgeApp)
         application.closing = False
         application.lan_ip = "192.168.5.7"
+        application.server_bound_ip = "192.168.5.7"
         application.server = self.fake_server("192.168.5.7")
         application.set_status = Mock()
 
@@ -268,6 +326,88 @@ class NetworkRebindTests(unittest.TestCase):
 
         self.assertFalse(changed)
         create_server.assert_not_called()
+        application.set_status.assert_called_once_with(
+            "当前地址未变化：192.168.5.7"
+        )
+
+    def test_temporary_network_loss_does_not_replace_lan_server_with_loopback(self):
+        application = object.__new__(BridgeApp)
+        application.closing = False
+        application.lan_ip = "192.168.10.104"
+        application.server_bound_ip = "192.168.10.104"
+        application.server = self.fake_server("192.168.10.104")
+        application.set_status = Mock()
+
+        with patch("app.local_ip", return_value="127.0.0.1"), patch(
+            "app.BridgeServer"
+        ) as create_server:
+            changed = application._refresh_network_binding()
+
+        self.assertFalse(changed)
+        create_server.assert_not_called()
+        application.set_status.assert_called_once_with(
+            "当前未找到可用局域网，地址保持不变"
+        )
+
+    def test_opening_qr_or_restoring_window_cannot_refresh_address(self):
+        self.assertNotIn(
+            "self._refresh_network_binding()", inspect.getsource(BridgeApp.toggle_qr)
+        )
+        self.assertNotIn(
+            "self._refresh_network_binding()",
+            inspect.getsource(BridgeApp.restore_from_tray),
+        )
+
+
+class SingleInstanceTests(unittest.TestCase):
+    def test_activation_is_acknowledged_after_existing_window_is_restored(self):
+        application = object.__new__(BridgeApp)
+        application.activation_event = 11
+        application.activation_ack_event = 12
+        application.tray_actions = queue.Queue()
+        application.restore_from_tray = Mock()
+        application.root = Mock()
+        application.closing = False
+        kernel32 = Mock()
+        kernel32.WaitForSingleObject.return_value = 0
+
+        with patch("app.ctypes.windll.kernel32", kernel32):
+            application._poll_tray_actions()
+
+        kernel32.ResetEvent.assert_called_once_with(11)
+        application.restore_from_tray.assert_called_once_with()
+        kernel32.SetEvent.assert_called_once_with(12)
+
+    def test_restore_shows_window_before_leaving_tray_icon_available(self):
+        application = object.__new__(BridgeApp)
+        application.root = Mock()
+        application.root.winfo_id.return_value = 123
+        application.tray_icon = Mock()
+
+        with patch("app.ctypes.windll.user32") as user32:
+            application.restore_from_tray()
+
+        application.root.deiconify.assert_called_once_with()
+        application.root.state.assert_called_once_with("normal")
+        application.tray_icon.stop.assert_not_called()
+        user32.SetForegroundWindow.assert_called_once_with(123)
+
+    def test_fatal_error_is_recorded_instead_of_silent_exit(self):
+        log_file = Path(__file__).with_name("test-crash.log")
+        log_file.unlink(missing_ok=True)
+        try:
+            with patch("app.ctypes.windll.user32") as user32:
+                try:
+                    raise RuntimeError("startup failed")
+                except RuntimeError as error:
+                    report_fatal_error(error, log_file)
+
+            contents = log_file.read_text(encoding="utf-8")
+            self.assertIn("RuntimeError: startup failed", contents)
+            self.assertIn("Traceback", contents)
+            user32.MessageBoxW.assert_called_once()
+        finally:
+            log_file.unlink(missing_ok=True)
 
 
 class PairingTokenTests(unittest.TestCase):
