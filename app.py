@@ -21,10 +21,25 @@ from socketserver import TCPServer
 from tkinter import messagebox, ttk
 from urllib.parse import parse_qs, urlparse
 
+import comtypes
 import qrcode
 import pystray
 import win32clipboard
+from comtypes.client import CreateObject, GetModule
 from PIL import Image, ImageTk
+
+if not getattr(sys, "frozen", False):
+    GetModule("UIAutomationCore.dll")
+
+from comtypes.gen.UIAutomationClient import (  # noqa: E402
+    CUIAutomation,
+    IUIAutomation,
+    IUIAutomationValuePattern,
+    UIA_DocumentControlTypeId,
+    UIA_EditControlTypeId,
+    UIA_TextPatternId,
+    UIA_ValuePatternId,
+)
 
 
 APP_NAME = "声桥"
@@ -297,6 +312,10 @@ def report_fatal_error(
         pass
 
 
+class NoTextInputFocusError(OSError):
+    pass
+
+
 class WindowsUnicodeInput:
     """Insert Unicode text at the active cursor without replacing the control value."""
 
@@ -397,8 +416,7 @@ class WindowsUnicodeInput:
         self._paste_with_clipboard(text)
 
     def press_enter(self) -> None:
-        if not self.user32.GetForegroundWindow():
-            raise OSError("没有可接收回车的当前窗口")
+        self._require_text_input_target()
         self._send_inputs(
             self._inputs_from_events(
                 (
@@ -411,9 +429,7 @@ class WindowsUnicodeInput:
     def _paste_with_clipboard(self, text: str) -> None:
         owner = 0
         try:
-            target_window = self.user32.GetForegroundWindow()
-            if not target_window:
-                raise OSError("没有可接收文字的当前窗口")
+            target = self._require_text_input_target()
 
             create_window = self.user32.CreateWindowExW
             create_window.argtypes = (
@@ -438,8 +454,10 @@ class WindowsUnicodeInput:
                 raise ctypes.WinError(ctypes.get_last_error())
 
             self._set_clipboard_text(owner, text)
-            if self.user32.GetForegroundWindow() != target_window:
-                raise OSError("粘贴前当前窗口发生变化，已停止发送")
+            if self._require_text_input_target() != target:
+                raise NoTextInputFocusError(
+                    "电脑端输入光标已变化，请重新点击输入框后再发送"
+                )
 
             self._send_inputs(
                 self._inputs_from_events(
@@ -454,6 +472,87 @@ class WindowsUnicodeInput:
         finally:
             if owner:
                 self.user32.DestroyWindow(owner)
+
+    def _text_input_target(self) -> tuple[int, ...] | None:
+        foreground = self.user32.GetForegroundWindow()
+        if not foreground:
+            return None
+        process_id = wintypes.DWORD()
+        thread_id = self.user32.GetWindowThreadProcessId(
+            foreground, ctypes.byref(process_id)
+        )
+        info = self.GuiThreadInfo(size=ctypes.sizeof(self.GuiThreadInfo))
+        if thread_id and self.user32.GetGUIThreadInfo(
+            thread_id, ctypes.byref(info)
+        ) and info.focus:
+            if info.caret:
+                return int(foreground), int(info.focus)
+
+            class_name = ctypes.create_unicode_buffer(256)
+            if self.user32.GetClassNameW(info.focus, class_name, 256):
+                normalized_class = class_name.value.casefold()
+                if (
+                    normalized_class == "edit"
+                    or "richedit" in normalized_class
+                    or ".edit." in normalized_class
+                ):
+                    return int(foreground), int(info.focus)
+
+        runtime_id = self._uia_text_input_runtime_id(process_id.value)
+        if runtime_id:
+            return int(foreground), int(process_id.value), *runtime_id
+        return None
+
+    @staticmethod
+    def _uia_text_input_runtime_id(process_id: int) -> tuple[int, ...] | None:
+        if not process_id:
+            return None
+        initialized = False
+        try:
+            comtypes.CoInitialize()
+            initialized = True
+            automation = CreateObject(CUIAutomation, interface=IUIAutomation)
+            element = automation.GetFocusedElement()
+            if (
+                not element
+                or element.CurrentProcessId != process_id
+                or not element.CurrentIsEnabled
+                or element.CurrentControlType
+                not in {UIA_EditControlTypeId, UIA_DocumentControlTypeId}
+            ):
+                return None
+
+            value_pattern = element.GetCurrentPattern(UIA_ValuePatternId)
+            if value_pattern:
+                editable_value = value_pattern.QueryInterface(
+                    IUIAutomationValuePattern
+                )
+                if editable_value.CurrentIsReadOnly:
+                    return None
+            else:
+                aria_role = (element.CurrentAriaRole or "").casefold()
+                if aria_role not in {"textbox", "searchbox"} or not element.GetCurrentPattern(
+                    UIA_TextPatternId
+                ):
+                    return None
+
+            runtime_id = element.GetRuntimeId()
+            if not runtime_id:
+                return None
+            return tuple(int(value) for value in runtime_id)
+        except Exception:
+            return None
+        finally:
+            if initialized:
+                comtypes.CoUninitialize()
+
+    def _require_text_input_target(self) -> tuple[int, ...]:
+        target = self._text_input_target()
+        if target is None:
+            raise NoTextInputFocusError(
+                "电脑端未检测到输入光标，请先在电脑输入框中点击一下"
+            )
+        return target
 
     def _set_clipboard_text(self, owner: int, text: str) -> None:
         self._open_clipboard(owner)
@@ -668,6 +767,16 @@ class BridgeServer(ThreadingHTTPServer):
             self._phone_condition.notify_all()
             return message_id
 
+    def acknowledge_phone_messages(self, through: int, client_session: str) -> int:
+        with self._phone_condition:
+            if client_session != self.session_id:
+                return 0
+            previous_count = len(self._phone_messages)
+            self._phone_messages = [
+                item for item in self._phone_messages if item["id"] > through
+            ]
+            return previous_count - len(self._phone_messages)
+
     def messages_for_phone(
         self, after: int, client_session: str, wait_seconds: float = 20
     ) -> list[dict]:
@@ -737,8 +846,13 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
-        if parsed.path not in {"/send", "/enter", "/settings"} or not self._authorized(parsed.query):
+        if parsed.path not in {
+            "/send", "/enter", "/settings", "/ack"
+        } or not self._authorized(parsed.query):
             self._json_response(403, {"ok": False, "error": "配对链接无效"})
+            return
+        if parsed.path == "/ack":
+            self._acknowledge_phone_messages()
             return
         if parsed.path == "/settings":
             self._update_mobile_settings()
@@ -750,6 +864,10 @@ class BridgeHandler(BaseHTTPRequestHandler):
         if parsed.path == "/enter":
             try:
                 self.server.enter_callback()
+            except NoTextInputFocusError as error:
+                self.server.status_callback(str(error))
+                self._json_response(409, {"ok": False, "error": str(error)})
+                return
             except Exception as error:
                 self.server.status_callback(f"发送回车失败：{error}")
                 self._json_response(500, {"ok": False, "error": "电脑回车失败"})
@@ -775,6 +893,10 @@ class BridgeHandler(BaseHTTPRequestHandler):
         except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
             self._json_response(400, {"ok": False, "error": "文字内容无效"})
             return
+        except NoTextInputFocusError as error:
+            self.server.status_callback(str(error))
+            self._json_response(409, {"ok": False, "error": str(error)})
+            return
         except Exception as error:
             self.server.status_callback(f"发送失败：{error}")
             self._json_response(500, {"ok": False, "error": "电脑输入失败"})
@@ -782,6 +904,41 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
         self.server.status_callback(f"已输入 {len(text)} 个字符")
         self._json_response(200, {"ok": True})
+
+    def _acknowledge_phone_messages(self) -> None:
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if length <= 0 or length > 1_024:
+                raise ValueError
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            client_session = payload.get("session")
+            through = payload.get("through")
+            if (
+                not isinstance(client_session, str)
+                or not isinstance(through, int)
+                or isinstance(through, bool)
+                or through < 0
+            ):
+                raise ValueError
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+            self._json_response(400, {"ok": False, "error": "确认信息无效"})
+            return
+
+        acknowledged = self.server.acknowledge_phone_messages(
+            through, client_session
+        )
+        if acknowledged:
+            self.server.status_callback(
+                f"手机已确认接收 {acknowledged} 条消息"
+            )
+        self._json_response(
+            200,
+            {
+                "ok": True,
+                "session": self.server.session_id,
+                "acknowledged": acknowledged,
+            },
+        )
 
     def _update_mobile_settings(self) -> None:
         try:

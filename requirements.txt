@@ -1,4 +1,5 @@
 Pillow>=10,<13
+comtypes>=1.4,<2
 pystray>=0.19,<1
 qrcode>=7,<9
 pywin32>=311,<312

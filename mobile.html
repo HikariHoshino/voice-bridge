@@ -763,11 +763,32 @@
       if (document.visibilityState === 'visible') text.focus();
     }
 
+    function saveReceiveState() {
+      try {
+        localStorage.setItem(stateKey, JSON.stringify(receiveState));
+      } catch (_) {}
+    }
+
+    async function acknowledgeReceived() {
+      if (!receiveState.session || !receiveState.after) return;
+      const response = await fetch('/ack?token=' + encodeURIComponent(token), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          session: receiveState.session,
+          through: receiveState.after
+        })
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || '确认接收失败');
+    }
+
     const delay = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 
     async function receiveLoop() {
       while (true) {
         try {
+          await acknowledgeReceived();
           const params = new URLSearchParams({
             token,
             after: String(receiveState.after || 0),
@@ -778,14 +799,18 @@
           if (!response.ok) throw new Error(result.error || '连接失败');
 
           status.textContent = '● 已连接到电脑';
-          if (result.session !== receiveState.session) receiveState.after = 0;
+          if (result.session !== receiveState.session) {
+            receiveState = { session: result.session, after: 0 };
+            saveReceiveState();
+          }
           for (const item of result.messages) {
             insertAtCursor(item.text);
             receiveState.after = item.id;
+            saveReceiveState();
             message.textContent = '电脑文字已插入';
           }
           receiveState.session = result.session;
-          localStorage.setItem(stateKey, JSON.stringify(receiveState));
+          saveReceiveState();
         } catch (error) {
           status.textContent = '● 连接已断开，正在重试';
           await delay(1500);
