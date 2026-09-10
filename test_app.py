@@ -14,6 +14,7 @@ from urllib.request import Request, urlopen
 from app import (
     BridgeApp,
     BridgeServer,
+    NoTextInputFocusError,
     THEMES,
     WEB_PAGE,
     WindowsUnicodeInput,
@@ -181,6 +182,87 @@ class BridgeServerTests(unittest.TestCase):
         self.assertEqual(
             result["messages"], [{"id": message_id, "text": "电脑发给手机"}]
         )
+
+    def test_phone_acknowledgement_removes_delivered_computer_text(self):
+        first_id = self.server.queue_for_phone("第一条")
+        second_id = self.server.queue_for_phone("第二条")
+        payload = json.dumps(
+            {"session": self.server.session_id, "through": first_id}
+        ).encode("utf-8")
+        request = Request(
+            self.base_url + "/ack?token=test-token",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        with urlopen(request, timeout=2) as response:
+            result = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(result["acknowledged"], 1)
+        self.assertEqual(
+            self.server.messages_for_phone(
+                0, self.server.session_id, wait_seconds=0
+            ),
+            [{"id": second_id, "text": "第二条"}],
+        )
+
+    def test_stale_phone_session_cannot_acknowledge_current_messages(self):
+        message_id = self.server.queue_for_phone("必须保留")
+        payload = json.dumps(
+            {"session": "old-session", "through": message_id}
+        ).encode("utf-8")
+        request = Request(
+            self.base_url + "/ack?token=test-token",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        with urlopen(request, timeout=2) as response:
+            result = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(result["acknowledged"], 0)
+        self.assertEqual(
+            self.server.messages_for_phone(
+                0, self.server.session_id, wait_seconds=0
+            ),
+            [{"id": message_id, "text": "必须保留"}],
+        )
+
+    def test_missing_computer_input_cursor_is_reported_to_phone(self):
+        self.server.input_callback = Mock(
+            side_effect=NoTextInputFocusError("电脑端未检测到输入光标")
+        )
+        payload = json.dumps({"text": "不要误发"}).encode("utf-8")
+        request = Request(
+            self.base_url + "/send?token=test-token",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        with self.assertRaises(HTTPError) as caught:
+            urlopen(request, timeout=2)
+
+        self.assertEqual(caught.exception.code, 409)
+        result = json.loads(caught.exception.read().decode("utf-8"))
+        self.assertEqual(result["error"], "电脑端未检测到输入光标")
+
+    def test_missing_computer_input_cursor_rejects_remote_enter(self):
+        self.server.enter_callback = Mock(
+            side_effect=NoTextInputFocusError("电脑端未检测到输入光标")
+        )
+        request = Request(
+            self.base_url + "/enter?token=test-token", data=b"", method="POST"
+        )
+
+        with self.assertRaises(HTTPError) as caught:
+            urlopen(request, timeout=2)
+
+        self.assertEqual(caught.exception.code, 409)
+        result = json.loads(caught.exception.read().decode("utf-8"))
+        self.assertEqual(result["error"], "电脑端未检测到输入光标")
 
     def test_mobile_confirmation_settings_are_stored_by_computer(self):
         with urlopen(
@@ -463,10 +545,10 @@ class DesktopFeatureTests(unittest.TestCase):
 
         injector = object.__new__(WindowsUnicodeInput)
         injector.user32 = type("FakeUser32", (), {})()
-        injector.user32.GetForegroundWindow = lambda: 1
         injector.user32.SendInput = FakeSendInput()
 
-        injector.press_enter()
+        with patch.object(injector, "_require_text_input_target", return_value=(1, 2)):
+            injector.press_enter()
 
         self.assertEqual(
             injector.user32.SendInput.events,
@@ -478,6 +560,81 @@ class DesktopFeatureTests(unittest.TestCase):
                 ),
             ],
         )
+
+    def test_text_send_is_rejected_before_clipboard_changes_without_input_cursor(self):
+        injector = object.__new__(WindowsUnicodeInput)
+        injector.user32 = Mock()
+
+        with patch.object(
+            injector,
+            "_require_text_input_target",
+            side_effect=NoTextInputFocusError("电脑端未检测到输入光标"),
+        ), patch.object(injector, "_set_clipboard_text") as set_clipboard_text, patch.object(
+            injector, "_send_inputs"
+        ) as send_inputs:
+            with self.assertRaises(NoTextInputFocusError):
+                injector._paste_with_clipboard("不应发送")
+
+        set_clipboard_text.assert_not_called()
+        send_inputs.assert_not_called()
+
+    def test_focused_non_text_control_is_not_an_input_cursor(self):
+        injector = object.__new__(WindowsUnicodeInput)
+        injector.user32 = Mock()
+        injector.user32.GetForegroundWindow.return_value = 100
+        injector.user32.GetWindowThreadProcessId.return_value = 200
+
+        def set_gui_thread_info(_thread_id, pointer):
+            pointer._obj.focus = 300
+            pointer._obj.caret = 0
+            return True
+
+        def set_class_name(_window, buffer, _length):
+            buffer.value = "Button"
+            return len(buffer.value)
+
+        injector.user32.GetGUIThreadInfo.side_effect = set_gui_thread_info
+        injector.user32.GetClassNameW.side_effect = set_class_name
+
+        with patch.object(injector, "_uia_text_input_runtime_id", return_value=None):
+            self.assertIsNone(injector._text_input_target())
+
+    def test_reported_caret_is_accepted_as_input_cursor(self):
+        injector = object.__new__(WindowsUnicodeInput)
+        injector.user32 = Mock()
+        injector.user32.GetForegroundWindow.return_value = 100
+        injector.user32.GetWindowThreadProcessId.return_value = 200
+
+        def set_gui_thread_info(_thread_id, pointer):
+            pointer._obj.focus = 300
+            pointer._obj.caret = 300
+            return True
+
+        injector.user32.GetGUIThreadInfo.side_effect = set_gui_thread_info
+
+        self.assertEqual(injector._text_input_target(), (100, 300))
+
+    def test_uia_editable_control_is_accepted_when_browser_has_no_system_caret(self):
+        injector = object.__new__(WindowsUnicodeInput)
+        automation = Mock()
+        element = Mock()
+        pattern = Mock()
+        value_pattern = Mock()
+        automation.GetFocusedElement.return_value = element
+        element.CurrentProcessId = 200
+        element.CurrentControlType = 50004
+        element.CurrentIsEnabled = True
+        element.GetCurrentPattern.return_value = pattern
+        element.GetRuntimeId.return_value = (42, 7)
+        pattern.QueryInterface.return_value = value_pattern
+        value_pattern.CurrentIsReadOnly = False
+
+        with patch("app.comtypes.CoInitialize"), patch(
+            "app.comtypes.CoUninitialize"
+        ), patch("app.CreateObject", return_value=automation):
+            runtime_id = injector._uia_text_input_runtime_id(200)
+
+        self.assertEqual(runtime_id, (42, 7))
 
     def test_all_text_uses_clipboard_path_without_replacing_control(self):
         injector = object.__new__(WindowsUnicodeInput)
@@ -598,6 +755,8 @@ class DesktopFeatureTests(unittest.TestCase):
         self.assertIn("'/settings?token='", page)
         self.assertIn("confirmationSettings.confirm_send", page)
         self.assertIn("confirmationSettings.confirm_enter", page)
+        self.assertIn("'/ack?token='", page)
+        self.assertIn("await acknowledgeReceived();", page)
         self.assertIn("确认吗？", page)
         self.assertIn("'/enter?token='", page)
         self.assertEqual(page.count('class="icon-button"'), 3)

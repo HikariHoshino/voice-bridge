@@ -1,5 +1,10 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from comtypes.client import GetModule
+
+
+GetModule("UIAutomationCore.dll")
+
 
 a = Analysis(
     ["app.py"],
