@@ -45,20 +45,23 @@
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
-      <AdditionalDependencies>bcrypt.lib;runtimeobject.lib;shell32.lib;advapi32.lib;ws2_32.lib;iphlpapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>bcrypt.lib;runtimeobject.lib;shell32.lib;advapi32.lib;ws2_32.lib;iphlpapi.lib;uiautomationcore.lib;ole32.lib;oleaut32.lib;user32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="BridgeServerTests.cpp" />
+    <ClCompile Include="InputInjectorTests.cpp" />
     <ClCompile Include="NetworkManagerTests.cpp" />
     <ClCompile Include="SettingsStoreTests.cpp" />
     <ClCompile Include="..\VoiceBridge\Core\BridgeServer.cpp" />
+    <ClCompile Include="..\VoiceBridge\Core\InputInjector.cpp" />
     <ClCompile Include="..\VoiceBridge\Core\NetworkManager.cpp" />
     <ClCompile Include="..\VoiceBridge\Core\SettingsStore.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\VoiceBridge\Core\BridgeServer.h" />
     <ClInclude Include="..\VoiceBridge\Core\Errors.h" />
+    <ClInclude Include="..\VoiceBridge\Core\InputInjector.h" />
     <ClInclude Include="..\VoiceBridge\Core\NetworkManager.h" />
     <ClInclude Include="..\VoiceBridge\Core\SettingsStore.h" />
   </ItemGroup>

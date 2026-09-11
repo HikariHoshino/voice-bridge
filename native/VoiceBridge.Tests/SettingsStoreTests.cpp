@@ -110,6 +110,7 @@ namespace
 }
 
 void RunBridgeServerTests(std::filesystem::path const& directory);
+void RunInputInjectorTests(std::filesystem::path const& directory);
 void RunNetworkManagerTests(std::filesystem::path const& directory);
 
 int wmain(int argc, wchar_t** argv)
@@ -132,9 +133,10 @@ int wmain(int argc, wchar_t** argv)
         TestTokenAndCountPersistence(config);
         TestNativeAutostartCommand();
         RunBridgeServerTests(directory);
+        RunInputInjectorTests(directory);
         RunNetworkManagerTests(directory);
         std::filesystem::remove(config);
-        std::wcout << L"Native core tests: 14 passed\n";
+        std::wcout << L"Native core tests: 18 passed\n";
         return 0;
     }
     catch (std::exception const& error)
