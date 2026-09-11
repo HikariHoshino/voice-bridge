@@ -362,7 +362,7 @@ public:
         }
     }
     ~Bridge() { stop_host(host_); }
-    void bind(std::string const& ip, int requested_port) {
+    void bind(std::string const& ip, int requested_port, std::function<void()> const& before_commit = {}) {
         auto next = std::make_unique<Host>(); route(*next);
         int actual_port = requested_port;
         if (requested_port == 0) actual_port = next->server.bind_to_any_port(ip);
@@ -370,6 +370,8 @@ public:
         if (actual_port <= 0) throw std::runtime_error("无法绑定本机服务");
         auto raw = next.get(); next->thread = std::thread([raw] { raw->server.listen_after_bind(); });
         next->server.wait_until_ready();
+        try { if (before_commit) before_commit(); }
+        catch (...) { stop_host(next); throw; }
         stop_host(host_); host_ = std::move(next); bound_ip = ip; port = actual_port;
     }
     void start() {
@@ -384,7 +386,9 @@ public:
         auto ip = choose_ip(addresses());
         if (ip == "127.0.0.1") { status_("当前未找到可用局域网，地址保持不变"); return false; }
         if (ip == bound_ip && ip == displayed_ip) { status_("当前地址未变化：" + ip); return false; }
-        bind(ip, port); displayed_ip = ip; config_.update({{"lan_ip", ip}});
+        bind(ip, port, [&] { config_.update({{"lan_ip", ip}}); }); displayed_ip = ip;
+        { std::lock_guard lock(mutex_); session_ = random_token(8); }
+        condition_.notify_all();
         status_("地址已刷新并保存：" + ip); return true;
     }
     std::string url() { std::lock_guard lock(mutex_); return "http://" + displayed_ip + ":" + std::to_string(port) + "/?token=" + token_; }

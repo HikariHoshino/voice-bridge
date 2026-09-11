@@ -50,6 +50,11 @@ baseline.open_settings()
 result["settings_client"] = [baseline.settings_window.winfo_reqwidth(), baseline.settings_window.winfo_reqheight()]
 baseline.toggle_qr()
 result["pairing_client"] = [baseline.qr_window.winfo_reqwidth(), baseline.qr_window.winfo_reqheight()]
+for name, window in (("settings", baseline.settings_window), ("pairing", baseline.qr_window)):
+    result[name + "_children"] = [
+        {"class": child.winfo_class(), "height": child.winfo_reqheight(), "width": child.winfo_reqwidth()}
+        for container in window.winfo_children() for child in container.winfo_children()
+    ]
 destination = project / "native/test-output/baseline-metrics.json"
 destination.parent.mkdir(exist_ok=True)
 destination.write_text(json.dumps(result, indent=2), encoding="utf-8")

@@ -1,7 +1,9 @@
-param([switch]$Launch, [switch]$UI, [ValidatePattern('^[A-Za-z0-9_-]+$')][string]$OutputName = 'Release')
+param([switch]$Launch, [switch]$UI, [ValidatePattern('^[A-Za-z0-9_-]+$')][string]$OutputName = 'Release', [string]$Executable, [string]$ResultsDirectory)
 $ErrorActionPreference = 'Stop'
 $exe = Join-Path $PSScriptRoot "bin\$OutputName\VoiceBridge.exe"
 $results = Join-Path $PSScriptRoot 'test-output'
+if ($Executable) { $exe = (Resolve-Path -LiteralPath $Executable).Path }
+if ($ResultsDirectory) { $results = [System.IO.Path]::GetFullPath($ResultsDirectory) }
 New-Item -ItemType Directory -Force -Path $results | Out-Null
 if ($Launch) {
     $config = Join-Path $results 'ui-config.json'

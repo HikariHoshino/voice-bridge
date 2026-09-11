@@ -11,6 +11,7 @@ inline void App::open_settings() {
     auto add_switch = [&](StackPanel const& panel, std::string const& key, wchar_t const* text, bool enabled) {
         Grid row; row.Height(std::max(24., font_line(10) + 2)); row.Margin({0, 7, 0, 7}); auto caption = label(text); caption.VerticalAlignment(VerticalAlignment::Center); row.Children().Append(caption);
         ToggleSwitch toggle; toggle.IsOn(enabled); toggle.OnContent(box_value(L"")); toggle.OffContent(box_value(L"")); toggle.HorizontalAlignment(HorizontalAlignment::Right); accessible_name(toggle, text);
+        toggle.KeyDown([](auto const& sender, Input::KeyRoutedEventArgs const& args) { if (args.Key() == Windows::System::VirtualKey::Enter) { auto control = sender.template as<ToggleSwitch>(); control.IsOn(!control.IsOn()); args.Handled(true); } });
         row.Children().Append(toggle); panel.Children().Append(row); setting_switches[key] = toggle;
     };
     add_switch(interface_panel, "autostart", L"开机后自动启动", vb::autostart_enabled());
@@ -19,7 +20,7 @@ inline void App::open_settings() {
     add_switch(interface_panel, "show_char_count", L"显示累计输入字符数", s["show_char_count"]);
     Grid count_row; count_row.Height(34); count_row.Margin({0, 6, 0, 0}); auto count = label((L"累计字符    当前 " + to_hstring(s["character_count"].dump()) + L" 个").c_str()); count.VerticalAlignment(VerticalAlignment::Center); count_row.Children().Append(count);
     auto clear = button(L"清零", [this, count] { config->update({{"character_count", 0}}); count.Text(L"累计字符    当前 0 个"); refresh_count(); }, 0, 70);
-    clear.Height(34); clear.HorizontalAlignment(HorizontalAlignment::Right); clear.Background(palette(L"DangerBrush")); clear.Foreground(palette(L"DangerInkBrush")); count_row.Children().Append(clear); interface_panel.Children().Append(count_row);
+    clear.Height(34); clear.CornerRadius(CornerRadius(13)); clear.HorizontalAlignment(HorizontalAlignment::Right); bind_color(clear, Control::BackgroundProperty(), L"DangerBrush"); bind_color(clear, Control::ForegroundProperty(), L"DangerInkBrush"); count_row.Children().Append(clear); interface_panel.Children().Append(count_row);
     auto interface_card = card(interface_panel); interface_card.Margin({0, 0, 0, 12}); content.Children().Append(interface_card);
     auto behavior = vertical(); auto behavior_title = label(L"操作方式", L"CardTitleStyle"); behavior_title.Height(font_line(11, true) + 4); behavior_title.Margin({0, 0, 0, 4}); behavior.Children().Append(behavior_title);
     add_switch(behavior, "confirm_enter", L"按下回车二次确认", s["confirm_enter"]);
@@ -31,9 +32,9 @@ inline void App::open_settings() {
         for (auto const& [caption, value] : items) {
             auto option = button(caption.c_str(), [this, draft, value, buttons] {
                 *draft = value;
-                for (auto const& [weak, v] : *buttons) if (auto b = weak.get()) { b.Background(v == value ? brush(0x2563EB) : palette(L"SecondaryBrush")); b.Foreground(v == value ? brush(0xffffff) : palette(L"InkBrush")); }
+                for (auto const& [weak, v] : *buttons) if (auto b = weak.get()) select_button(b, v == value);
             }, 0, width);
-            option.Height(38); option.Background(value == *draft ? brush(0x2563EB) : palette(L"SecondaryBrush")); option.Foreground(value == *draft ? brush(0xffffff) : palette(L"InkBrush"));
+            option.Height(38); option.CornerRadius(CornerRadius(14)); select_button(option, value == *draft);
             buttons->emplace_back(make_weak(option), value); row.Children().Append(option);
         }
         behavior.Children().Append(row);
@@ -51,8 +52,12 @@ inline void App::open_settings() {
     actions.Children().Append(button(L"取消", [this] { settings_window.Close(); }, 0, 94)); content.Children().Append(actions);
     ScrollViewer scroll; scroll.Content(content); bind_color(scroll, Control::BackgroundProperty(), L"RootBrush");
     const auto settings_width = std::max(500., std::floor(96 * ui_dpi_scale * 10 / 2.54) + 36);
-    content.Measure({static_cast<float>(settings_width - 36), std::numeric_limits<float>::infinity()});
-    settings_window = secondary(L"声桥设置", scroll, settings_width, std::max<double>(600., content.DesiredSize().Height));
+    const auto row_height = std::max(24., font_line(10) + 2) + 14;
+    const auto card_heading = font_line(11, true) + 4;
+    const auto interface_height = 54 + card_heading + 4 + 3 * row_height + 40;
+    const auto behavior_height = 54 + card_heading + 4 + 2 * row_height + 26 + 2 * (card_heading + 43);
+    const auto settings_height = 36 + font_line(22, true) + 4 + font_line(10) + 4 + 16 + interface_height + 12 + behavior_height + 56;
+    settings_window = secondary(L"声桥设置", scroll, settings_width, std::max(600., settings_height));
     settings_window.Closed([this](auto&&, auto&&) { settings_window = nullptr; setting_switches.clear(); });
 }
 
@@ -67,44 +72,48 @@ inline void App::draw_qr() {
 }
 inline void App::open_qr() {
     if (qr_window) { qr_window.Close(); return; }
-    auto content = vertical(10); content.Margin(Thickness(22));
-    auto title = label(L"扫描二维码连接声桥", L"TitleStyle"); title.HorizontalAlignment(HorizontalAlignment::Center); content.Children().Append(title);
-    auto subtitle = label(L"首次配对后请收藏手机页面", L"MutedStyle"); subtitle.HorizontalAlignment(HorizontalAlignment::Center); content.Children().Append(subtitle);
+    auto content = vertical(); content.Margin(Thickness(22));
+    auto title = label(L"扫描二维码连接声桥", L"TitleStyle"); title.Height(font_line(22, true) + 4); title.HorizontalAlignment(HorizontalAlignment::Center); content.Children().Append(title);
+    auto subtitle = label(L"首次配对后请收藏手机页面"); subtitle.Height(font_line(10) + 4); subtitle.Margin({0, 2, 0, 12}); bind_color(subtitle, TextBlock::ForegroundProperty(), L"MutedBrush"); subtitle.HorizontalAlignment(HorizontalAlignment::Center); content.Children().Append(subtitle);
     qr_canvas = Canvas(); qr_canvas.Width(240); qr_canvas.Height(240); qr_canvas.Background(brush(0xffffff)); qr_canvas.HorizontalAlignment(HorizontalAlignment::Center); accessible_name(qr_canvas, L"手机配对二维码"); content.Children().Append(qr_canvas);
-    qr_address = TextBox(); qr_address.IsReadOnly(true); qr_address.FontSize(12 * ui_dpi_scale); qr_address.TextAlignment(TextAlignment::Center); accessible_name(qr_address, L"手机访问地址"); content.Children().Append(qr_address);
+    qr_address = TextBox(); qr_address.IsReadOnly(true); qr_address.FontSize(12 * ui_dpi_scale); qr_address.MinHeight(0); qr_address.Height(font_line(9) + 6); qr_address.Padding({3, 0, 3, 0}); qr_address.Margin({0, 10, 0, 10}); qr_address.TextAlignment(TextAlignment::Center); accessible_name(qr_address, L"手机访问地址"); content.Children().Append(qr_address);
     auto actions = horizontal(); actions.HorizontalAlignment(HorizontalAlignment::Center);
     actions.Children().Append(button(L"复制访问地址", [this] { vb::clipboard(vb::wide(bridge->url())); status("手机访问地址已复制"); }, 0, 132));
     actions.Children().Append(button(L"刷新地址", [this] { bridge->refresh(); draw_qr(); }, 0x2563EB, 116));
     auto rotate = button(L"重新配对", [this] {
         auto result = MessageBoxW(window_handle(qr_window), L"旧的手机链接会立即失效，确定生成新链接吗？", L"重新配对", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2);
         if (result == IDYES) { bridge->rotate(); draw_qr(); status("配对链接已更新，请重新扫码"); }
-    }); rotate.Background(palette(L"DangerBrush")); rotate.Foreground(palette(L"DangerInkBrush")); actions.Children().Append(rotate); content.Children().Append(actions);
+    }); bind_color(rotate, Control::BackgroundProperty(), L"DangerBrush"); bind_color(rotate, Control::ForegroundProperty(), L"DangerInkBrush"); actions.Children().Append(rotate); content.Children().Append(actions);
     Grid background; bind_color(background, Panel::BackgroundProperty(), L"RootBrush"); background.Children().Append(content);
     const auto pairing_width = std::max(480., std::round(420 * ui_dpi_scale));
-    content.Measure({static_cast<float>(pairing_width - 44), std::numeric_limits<float>::infinity()});
-    draw_qr(); qr_window = secondary(L"手机配对", background, pairing_width, std::max<double>(450., content.DesiredSize().Height));
+    const auto pairing_height = 44 + font_line(22, true) + 4 + font_line(10) + 4 + 14 + 240 + font_line(9) + 6 + 20 + 42;
+    draw_qr(); qr_window = secondary(L"手机配对", background, pairing_width, std::max(450., pairing_height));
     qr_window.AppWindow().Presenter().as<windowing::OverlappedPresenter>().IsResizable(false);
-    qr_window.Closed([this](auto&&, auto&&) { qr_window = nullptr; qr_canvas = nullptr; qr_address = nullptr; });
+    select_button(find<Button>(L"QrButton"), true); icon(find<Button>(L"QrButton"), L"qr");
+    qr_window.Closed([this](auto&&, auto&&) { qr_window = nullptr; qr_canvas = nullptr; qr_address = nullptr; select_button(find<Button>(L"QrButton"), false); icon(find<Button>(L"QrButton"), L"qr"); });
 }
 inline void App::request_close() {
     auto action = config->settings()["close_action"];
     if (action == "tray") { minimize_to_tray(); return; }
     if (action == "exit") { exit_app(); return; }
     if (close_window) { close_window.Activate(); return; }
-    auto content = vertical(12); content.Margin(Thickness(24));
-    content.Children().Append(label(L"关闭窗口后要做什么？", L"TitleStyle"));
-    content.Children().Append(label(L"可在设置中修改以后关闭窗口的默认行为。", L"MutedStyle"));
+    auto content = vertical(); content.Margin(Thickness(24));
+    auto title = label(L"关闭窗口后要做什么？", L"TitleStyle"); title.Height(font_line(22, true) + 4); content.Children().Append(title);
+    auto subtitle = label(L"可在设置中修改以后关闭窗口的默认行为。"); subtitle.Height(font_line(10) + 4); subtitle.Margin({0, 3, 0, 18}); bind_color(subtitle, TextBlock::ForegroundProperty(), L"MutedBrush"); content.Children().Append(subtitle);
     auto actions = horizontal(10);
     actions.Children().Append(button(L"最小化到托盘", [this] { minimize_to_tray(); }, 0x2563EB, 142));
-    auto exit = button(L"直接关闭", [this] { exit_app(); }); exit.Background(palette(L"DangerBrush")); exit.Foreground(palette(L"DangerInkBrush")); actions.Children().Append(exit);
+    auto exit = button(L"直接关闭", [this] { exit_app(); }); bind_color(exit, Control::BackgroundProperty(), L"DangerBrush"); bind_color(exit, Control::ForegroundProperty(), L"DangerInkBrush"); actions.Children().Append(exit);
     content.Children().Append(actions); Grid background; bind_color(background, Panel::BackgroundProperty(), L"RootBrush"); background.Children().Append(content);
     content.Measure({std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity()});
-    close_window = secondary(L"关闭声桥", background, std::max<double>(450., content.DesiredSize().Width), std::max<double>(180., content.DesiredSize().Height));
+    const auto close_height = 48 + font_line(22, true) + 4 + font_line(10) + 4 + 21 + 42;
+    close_window = secondary(L"关闭声桥", background, std::max<double>(450., content.DesiredSize().Width), std::max(180., close_height));
     close_window.AppWindow().Presenter().as<windowing::OverlappedPresenter>().IsResizable(false);
-    close_window.Closed([this](auto&&, auto&&) { close_window = nullptr; });
+    EnableWindow(window_handle(window), FALSE);
+    close_window.Closed([this](auto&&, auto&&) { close_window = nullptr; EnableWindow(window_handle(window), TRUE); });
+    actions.Children().GetAt(0).as<Button>().Focus(FocusState::Programmatic);
     content.KeyDown([this](auto&&, Input::KeyRoutedEventArgs const& args) {
-        if (args.Key() == Windows::System::VirtualKey::Escape) close_window.Close();
-        if (args.Key() == Windows::System::VirtualKey::Enter) minimize_to_tray();
+        if (args.Key() == Windows::System::VirtualKey::Escape) { args.Handled(true); close_window.Close(); }
+        if (args.Key() == Windows::System::VirtualKey::Enter) { args.Handled(true); minimize_to_tray(); }
     });
 }
 inline void App::minimize_to_tray() {

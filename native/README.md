@@ -1,6 +1,14 @@
 # 声桥 Windows 原生重构
 
-本目录为独立分支中的 C++/WinRT + WinUI 3 + Composition 实现。原 Python 文件、手机页面和图标保持基线字节，恢复点见 BASELINE.md。当前验收状态见 VALIDATION.md。
+本目录为独立分支中的 C++/WinRT + WinUI 3 + Composition 实现。原 Python 文件、手机页面和图标保持基线字节，恢复点见源码中的 BASELINE.md。实际验收范围见 VALIDATION.md。
+
+## 使用交付包
+
+将整个文件夹放到固定位置，双击 `VoiceBridge.exe`。不需要 Python 或 Visual Studio，也不需要单独安装 Windows App SDK。请保留 EXE 同目录的 DLL、资源和子目录。
+
+手机和电脑连接同一局域网，在电脑点击二维码，用手机浏览器打开扫码所得地址并收藏。手机输入法的语音转文字仍由手机输入法提供。手机向电脑发送前，先点击电脑目标输入框。电脑向手机发送时，展开“电脑 → 手机”，输入文字并发送。
+
+如果 Windows 首次询问防火墙权限，局域网连接需要允许此程序访问当前专用网络。目标程序若以管理员身份运行，Windows 可能阻止普通权限声桥向其输入。
 
 ## 构建
 
@@ -26,9 +34,19 @@ powershell -NoProfile -ExecutionPolicy Bypass -File native/verify.ps1 -Launch
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File native/verify.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File native/verify.ps1 -UI
 ```
 
-测试对真实 C++ HTTP 服务发起回环请求，使用临时端口、项目内唯一配置及可控输入回调；不会向用户当前窗口注入文字。报告位于 `native/test-output/protocol-tests.json`。该测试覆盖协议和持久化，不代表真实输入目标、手机浏览器或视觉一致性已全部验收。
+协议测试对真实 C++ HTTP 服务发起回环请求，使用临时端口、项目内唯一配置及可控输入回调。UI 测试创建真实 WinUI 窗口，验证实际剪贴板粘贴、回车、两种快捷键、按钮、设置和托盘；输入目标必须是它自己的窗口，失去前台焦点时拒绝输入并报告失败。运行 UI 测试期间请保留测试窗口的焦点。测试不会修改日常配置或开机自启项，但实际粘贴验收会使用系统剪贴板。
+
+报告和 PNG 在 `native/test-output/`。交付包附带从交付目录运行的报告与预览，位于 `verification/`。
+
+可直接验证交付包：
+
+```powershell
+.\VoiceBridge.exe --self-test "C:\你的验收目录\protocol-tests.json"
+.\VoiceBridge.exe --ui-self-test "C:\你的验收目录\ui-tests.json"
+```
 
 ## 实现位置
 
@@ -37,6 +55,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File native/verify.ps1
 - NativeApp.h：C++/WinRT 应用、主窗口交互、主题及 Composition 动画。
 - SecondaryWindows.h：设置、二维码、关闭询问、托盘和窗口行为。
 - NativeTests.h：原生协议和配置回归。
+- UiTests.h：真实窗口、输入、快捷键、设置及托盘验收与 PNG 导出。
 - Main.cpp：命令行、单实例和启动。
 
 手机页面仍由原 `mobile.html` 提供，保持发送、回车二次确认、接收插入、复制、本地撤销和主题等全部浏览器侧功能。

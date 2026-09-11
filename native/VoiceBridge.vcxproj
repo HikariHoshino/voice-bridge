@@ -54,6 +54,7 @@
     <PackageReference Include="Microsoft.Windows.CppWinRT" Version="2.0.250303.1" />
   </ItemGroup>
   <ItemGroup><ClCompile Include="Main.cpp" /><ClCompile Include="vendor\qrcodegen.cpp" /></ItemGroup>
+  <ItemGroup><ResourceCompile Include="VoiceBridge.rc" /></ItemGroup>
   <ItemGroup>
     <None Include="Main.xaml"><CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory></None>
     <None Include="Theme.xaml"><CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory></None>

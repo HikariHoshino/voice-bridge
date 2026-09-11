@@ -98,13 +98,15 @@ inline void center(Window const& window, HWND owner = nullptr) {
 inline std::map<std::wstring, std::wstring> const icon_paths{
     {L"moon", L"M16 3 A8 8 0 1 0 21 15 A8 8 0 0 1 16 3"},
     {L"sun", L"M12 8 A4 4 0 1 0 12 16 A4 4 0 1 0 12 8 M12 2 L12 4 M12 20 L12 22 M2 12 L4 12 M20 12 L22 12 M5 5 L6.5 6.5 M17.5 17.5 L19 19 M5 19 L6.5 17.5 M17.5 6.5 L19 5"},
-    {L"settings", L"M9 3 L15 3 L16 6 L19 6 L22 11 L20 13 L20 17 L15 20 L12 18 L9 20 L4 17 L4 13 L2 11 L5 6 L8 6 Z M12 8 A4 4 0 1 0 12 16 A4 4 0 1 0 12 8"},
-    {L"pause", L"M8 5 L8 19 M16 5 L16 19"}, {L"play", L"M8 4 L19 12 L8 20 Z"},
-    {L"qr", L"M3 3 L9 3 L9 9 L3 9 Z M15 3 L21 3 L21 9 L15 9 Z M3 15 L9 15 L9 21 L3 21 Z M15 15 L18 15 L18 18 L21 18 L21 21 M15 18 L15 21"},
-    {L"down", L"M6 9 L12 15 L18 9"}, {L"up", L"M6 15 L12 9 L18 15"}
+    {L"settings", L"M12 9 A3 3 0 1 0 12 15 A3 3 0 1 0 12 9 M12 5 A7 7 0 1 0 12 19 A7 7 0 1 0 12 5 M12 3 L12 5.52 M3 12 L5.52 12 M18.48 12 L21 12 M12 18.48 L12 21"},
+    {L"pause", L"M8 6 L8 18 M16 6 L16 18"}, {L"play", L"M7 5 L19 12 L7 19 Z"},
+    {L"qr", L"M4 4 L10 4 L10 10 L4 10 Z M14 4 L20 4 L20 10 L14 10 Z M4 14 L10 14 L10 20 L4 20 Z M15 15 L20 15 L20 20 M15 20 L17 20"},
+    {L"down", L"M6 9 L12 15 L18 9"}, {L"up", L"M6 15 L12 9 L18 15"},
+    {L"copy", L"M5 5 L16 5 L16 16 L5 16 Z M9 9 L20 9 L20 20 L9 20 Z"},
+    {L"refresh", L"M17.73 7.98 A7 7 0 1 0 16.50 17.36 M16 5 L20 6 L19 10"}
 };
 inline void icon(Button const& button, std::wstring const& key) {
-    auto path = xaml(L"<Path xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation' Width='21' Height='21' Stretch='Uniform' StrokeThickness='1.8' StrokeStartLineCap='Round' StrokeEndLineCap='Round' StrokeLineJoin='Round' Data='" + icon_paths.at(key) + L"'/>").as<Shapes::Path>();
+    auto path = xaml(L"<Path xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation' Width='24' Height='24' Stretch='None' StrokeThickness='2' StrokeStartLineCap='Round' StrokeEndLineCap='Round' StrokeLineJoin='Round' Data='" + icon_paths.at(key) + L"'/>").as<Shapes::Path>();
     path.Stroke(button.Foreground()); button.Content(path);
 }
 struct App : ApplicationT<App, Markup::IXamlMetadataProvider> {
@@ -145,7 +147,13 @@ struct App : ApplicationT<App, Markup::IXamlMetadataProvider> {
     struct ThemeBinding { weak_ref<DependencyObject> object; DependencyProperty property; hstring key; };
     std::vector<ThemeBinding> theme_bindings;
     void bind_color(DependencyObject const& object, DependencyProperty const& property, wchar_t const* key) {
-        object.SetValue(property, palette(key)); theme_bindings.push_back({make_weak(object), property, key});
+        object.SetValue(property, palette(key));
+        for (auto& binding : theme_bindings) if (binding.object.get() == object && binding.property == property) { binding.key = key; return; }
+        theme_bindings.push_back({make_weak(object), property, key});
+    }
+    void select_button(Button const& button, bool selected) {
+        bind_color(button, Control::BackgroundProperty(), selected ? L"PrimaryBrush" : L"SecondaryBrush");
+        bind_color(button, Control::ForegroundProperty(), selected ? L"WhiteBrush" : L"InkBrush");
     }
     App() {
         UnhandledException([](auto&&, UnhandledExceptionEventArgs const& args) { log_error(args.Message()); });
@@ -267,7 +275,7 @@ inline void App::OnLaunched(LaunchActivatedEventArgs const&) try {
         });
     });
     find<TextBox>(L"DesktopText").KeyboardAccelerators().Append(keyboard);
-    find<TextBox>(L"DesktopText").KeyDown([this](auto&&, Input::KeyRoutedEventArgs const& args) {
+    find<TextBox>(L"DesktopText").PreviewKeyDown([this](auto&&, Input::KeyRoutedEventArgs const& args) {
         if (args.Key() == Windows::System::VirtualKey::Enter && !(GetKeyState(VK_CONTROL) & 0x8000) && config->settings()["send_mode"] == "enter") { args.Handled(true); safe([&] { send(); }); }
     });
     SetWindowSubclass(window_handle(window), &App::window_proc, 1, reinterpret_cast<DWORD_PTR>(this));

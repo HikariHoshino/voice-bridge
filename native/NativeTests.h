@@ -55,6 +55,11 @@ inline int run_tests(fs::path const& report) {
         get = client.Get(path("/receive") + "&after=abc"); check(get && get->status == 400, "invalid polling sequence fails loudly");
         bridge.rotate(); get = client.Get(path("/settings")); check(get && get->status == 403, "re-pair immediately revokes old links");
         token = config.token(); get = client.Get(path("/settings")); check(get && get->status == 200, "new pairing token authenticates");
+        auto original_port = bridge.port; bool replacement_failed = false;
+        try { bridge.bind("127.0.0.1", 0, [] { throw std::runtime_error("settings persistence unavailable"); }); }
+        catch (std::runtime_error const&) { replacement_failed = true; }
+        get = client.Get(path("/settings"));
+        check(replacement_failed && bridge.port == original_port && get && get->status == 200, "failed address persistence keeps the previous listener usable");
         check(choose_ip({{"10.1.0.3", true}, {"192.168.2.1", false}}) == "10.1.0.3", "gateway adapter wins over unrelated private virtual networks");
         check(choose_ip({{"10.1.0.3", true}, {"192.168.2.2", true}}) == "192.168.2.2", "LAN preference matches original 192.168 then 172.16 then 10 ordering");
     } catch (std::exception const& error) { results.push_back({{"test", "test execution"}, {"passed", false}, {"error", error.what()}}); }

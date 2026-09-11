@@ -8,6 +8,9 @@
           <SolidColorBrush x:Key="InputBrush" Color="#FFFFFF"/>
           <SolidColorBrush x:Key="LineBrush" Color="#DBE4F0"/>
           <SolidColorBrush x:Key="SecondaryBrush" Color="#EDF2F8"/>
+          <SolidColorBrush x:Key="SwitchOffBrush" Color="#DCE5F0"/>
+          <SolidColorBrush x:Key="PrimaryBrush" Color="#2563EB"/>
+          <SolidColorBrush x:Key="WhiteBrush" Color="#FFFFFF"/>
           <SolidColorBrush x:Key="StatusBrush" Color="#E8F7F0"/>
           <SolidColorBrush x:Key="StatusInkBrush" Color="#176B4D"/>
           <SolidColorBrush x:Key="DangerBrush" Color="#FFF1F2"/>
@@ -21,6 +24,9 @@
           <SolidColorBrush x:Key="InputBrush" Color="#111827"/>
           <SolidColorBrush x:Key="LineBrush" Color="#334155"/>
           <SolidColorBrush x:Key="SecondaryBrush" Color="#263449"/>
+          <SolidColorBrush x:Key="SwitchOffBrush" Color="#3A4D67"/>
+          <SolidColorBrush x:Key="PrimaryBrush" Color="#2563EB"/>
+          <SolidColorBrush x:Key="WhiteBrush" Color="#FFFFFF"/>
           <SolidColorBrush x:Key="StatusBrush" Color="#15352F"/>
           <SolidColorBrush x:Key="StatusInkBrush" Color="#6EE7B7"/>
           <SolidColorBrush x:Key="DangerBrush" Color="#3B202B"/>
@@ -52,6 +58,7 @@
       <Style TargetType="Button">
         <Setter Property="FontFamily" Value="Microsoft YaHei UI"/>
         <Setter Property="FontSize" Value="12"/>
+        <Setter Property="FontWeight" Value="Bold"/>
         <Setter Property="Background" Value="{ThemeResource SecondaryBrush}"/>
         <Setter Property="Foreground" Value="{ThemeResource InkBrush}"/>
         <Setter Property="BorderThickness" Value="0"/>
@@ -75,6 +82,45 @@
                 <Border x:Name="Body" Background="{TemplateBinding Background}" CornerRadius="{TemplateBinding CornerRadius}"/>
                 <Border x:Name="Hover" Background="{TemplateBinding Foreground}" CornerRadius="{TemplateBinding CornerRadius}" Opacity="0" IsHitTestVisible="False"/>
                 <ContentPresenter Content="{TemplateBinding Content}" ContentTemplate="{TemplateBinding ContentTemplate}" Foreground="{TemplateBinding Foreground}" Padding="{TemplateBinding Padding}" HorizontalContentAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalContentAlignment="{TemplateBinding VerticalContentAlignment}"/>
+              </Grid>
+            </ControlTemplate>
+          </Setter.Value>
+        </Setter>
+      </Style>
+      <Style TargetType="ToggleSwitch">
+        <Setter Property="MinWidth" Value="42"/>
+        <Setter Property="Width" Value="42"/>
+        <Setter Property="Height" Value="24"/>
+        <Setter Property="VerticalAlignment" Value="Center"/>
+        <Setter Property="Template">
+          <Setter.Value>
+            <ControlTemplate TargetType="ToggleSwitch">
+              <Grid x:Name="SwitchAreaGrid" Width="42" Height="24" Background="Transparent" Control.IsTemplateFocusTarget="True">
+                <VisualStateManager.VisualStateGroups>
+                  <VisualStateGroup x:Name="CommonStates">
+                    <VisualState x:Name="Normal"/>
+                    <VisualState x:Name="PointerOver"><VisualState.Setters><Setter Target="Hover.Opacity" Value="0.1"/></VisualState.Setters></VisualState>
+                    <VisualState x:Name="Pressed"/>
+                    <VisualState x:Name="Disabled"><VisualState.Setters><Setter Target="SwitchAreaGrid.Opacity" Value="0.45"/></VisualState.Setters></VisualState>
+                  </VisualStateGroup>
+                  <VisualStateGroup x:Name="ToggleStates">
+                    <VisualState x:Name="Off"/>
+                    <VisualState x:Name="Dragging"/>
+                    <VisualState x:Name="On">
+                      <VisualState.Setters><Setter Target="SwitchKnobBounds.Fill" Value="{ThemeResource PrimaryBrush}"/></VisualState.Setters>
+                      <Storyboard><DoubleAnimation Storyboard.TargetName="KnobTranslateTransform" Storyboard.TargetProperty="X" To="18" Duration="0"/></Storyboard>
+                    </VisualState>
+                  </VisualStateGroup>
+                </VisualStateManager.VisualStateGroups>
+                <Rectangle x:Name="SwitchKnobBounds" Width="42" Height="24" RadiusX="12" RadiusY="12" Fill="{ThemeResource SwitchOffBrush}"/>
+                <Border x:Name="Hover" Background="White" CornerRadius="12" Opacity="0" IsHitTestVisible="False"/>
+                <Grid x:Name="SwitchKnob" Width="24" Height="24" HorizontalAlignment="Left">
+                  <Ellipse Width="18" Height="18" Fill="White"/>
+                  <Grid.RenderTransform><TranslateTransform x:Name="KnobTranslateTransform"/></Grid.RenderTransform>
+                </Grid>
+                <Thumb x:Name="SwitchThumb" AutomationProperties.AccessibilityView="Raw">
+                  <Thumb.Template><ControlTemplate TargetType="Thumb"><Rectangle Fill="Transparent"/></ControlTemplate></Thumb.Template>
+                </Thumb>
               </Grid>
             </ControlTemplate>
           </Setter.Value>
