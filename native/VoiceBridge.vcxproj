@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{9AA28AC0-19E1-4E8B-8A67-5BA822176D81}</ProjectGuid>
+    <RootNamespace>VoiceBridge</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0.26100.0</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformMinVersion>10.0.19041.0</WindowsTargetPlatformMinVersion>
+    <AppContainerApplication>false</AppContainerApplication>
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <WindowsAppSdkBootstrapInitialize>false</WindowsAppSdkBootstrapInitialize>
+    <DisableWindowsAppSDKMLAutoInitialize>true</DisableWindowsAppSDKMLAutoInitialize>
+    <AppxPackage>false</AppxPackage>
+    <UseWinUI>true</UseWinUI>
+    <NuGetTargetMoniker>native,Version=v0.0</NuGetTargetMoniker>
+    <NuGetRuntimeIdentifier>win-x64</NuGetRuntimeIdentifier>
+    <RestorePackagesPath>$(MSBuildThisFileDirectory).packages</RestorePackagesPath>
+    <RestoreSources>https://api.nuget.org/v3/index.json</RestoreSources>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+    <UseDebugLibraries Condition="'$(Configuration)'=='Debug'">true</UseDebugLibraries>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup>
+    <OutDir>$(MSBuildThisFileDirectory)bin\$(Configuration)\</OutDir>
+    <IntDir>$(MSBuildThisFileDirectory)obj\$(Configuration)\</IntDir>
+    <TargetName>VoiceBridge</TargetName>
+    <CppWinRTOptimized>true</CppWinRTOptimized>
+    <CppWinRTRootNamespaceAutoMerge>true</CppWinRTRootNamespaceAutoMerge>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalOptions>/utf-8 /bigobj %(AdditionalOptions)</AdditionalOptions>
+      <PreprocessorDefinitions>WIN32_LEAN_AND_MEAN;NOMINMAX;UNICODE;_UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir);$(ProjectDir)vendor;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <WarningLevel>Level4</WarningLevel>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <Link><SubSystem>Windows</SubSystem><AdditionalDependencies>windowsapp.lib;user32.lib;shell32.lib;comctl32.lib;dwmapi.lib;bcrypt.lib;iphlpapi.lib;ws2_32.lib;ole32.lib;oleaut32.lib;advapi32.lib;crypt32.lib;%(AdditionalDependencies)</AdditionalDependencies></Link>
+    <Manifest><AdditionalManifestFiles>app.manifest</AdditionalManifestFiles></Manifest>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.8.260804001" />
+    <PackageReference Include="Microsoft.Windows.CppWinRT" Version="2.0.250303.1" />
+  </ItemGroup>
+  <ItemGroup><ClCompile Include="Main.cpp" /><ClCompile Include="vendor\qrcodegen.cpp" /></ItemGroup>
+  <ItemGroup>
+    <None Include="Main.xaml"><CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory></None>
+    <None Include="Theme.xaml"><CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory></None>
+    <None Include="..\mobile.html"><Link>mobile.html</Link><CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory></None>
+    <None Include="..\assets\voice-bridge.png"><Link>assets\voice-bridge.png</Link><CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory></None>
+    <None Include="..\assets\voice-bridge.ico"><Link>assets\voice-bridge.ico</Link><CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory></None>
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>
