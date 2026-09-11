@@ -58,7 +58,7 @@
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
-      <AdditionalDependencies>runtimeobject.lib;shcore.lib;dwmapi.lib;bcrypt.lib;shell32.lib;advapi32.lib;ws2_32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>runtimeobject.lib;shcore.lib;dwmapi.lib;bcrypt.lib;shell32.lib;advapi32.lib;ws2_32.lib;iphlpapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -73,6 +73,7 @@
     <ClInclude Include="App.xaml.h" />
     <ClInclude Include="Core\BridgeServer.h" />
     <ClInclude Include="Core\Errors.h" />
+    <ClInclude Include="Core\NetworkManager.h" />
     <ClInclude Include="Core\SettingsStore.h" />
     <ClInclude Include="MainWindow.xaml.h" />
     <ClInclude Include="pch.h" />
@@ -80,6 +81,9 @@
   <ItemGroup>
     <ClCompile Include="App.xaml.cpp" />
     <ClCompile Include="Core\BridgeServer.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="Core\NetworkManager.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
     <ClCompile Include="Core\SettingsStore.cpp">
