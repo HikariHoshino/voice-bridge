@@ -4,28 +4,29 @@
 inline void App::open_settings() {
     if (settings_window) { settings_window.Activate(); return; }
     auto s = config->settings(); draft_close = s["close_action"]; draft_send = s["send_mode"];
-    auto content = vertical(12); content.Margin(Thickness(18));
-    content.Children().Append(label(L"设置", L"TitleStyle"));
-    content.Children().Append(label(L"偏好保存在电脑，手机端打开页面时同步确认设置", L"MutedStyle"));
-    auto interface_panel = vertical(4); interface_panel.Children().Append(label(L"界面与启动", L"CardTitleStyle"));
+    auto content = vertical(); content.Margin(Thickness(18));
+    auto title = label(L"设置", L"TitleStyle"); title.Height(font_line(22, true) + 4); content.Children().Append(title);
+    auto subtitle = label(L"偏好保存在电脑，手机端打开页面时同步确认设置"); subtitle.Height(font_line(10) + 4); subtitle.Margin({0, 2, 0, 14}); bind_color(subtitle, TextBlock::ForegroundProperty(), L"MutedBrush"); content.Children().Append(subtitle);
+    auto interface_panel = vertical(); auto interface_title = label(L"界面与启动", L"CardTitleStyle"); interface_title.Height(font_line(11, true) + 4); interface_title.Margin({0, 0, 0, 4}); interface_panel.Children().Append(interface_title);
     auto add_switch = [&](StackPanel const& panel, std::string const& key, wchar_t const* text, bool enabled) {
-        Grid row; row.MinHeight(38); auto caption = label(text); caption.VerticalAlignment(VerticalAlignment::Center); row.Children().Append(caption);
-        ToggleSwitch toggle; toggle.IsOn(enabled); toggle.OnContent(box_value(L"")); toggle.OffContent(box_value(L"")); toggle.MinWidth(44); toggle.HorizontalAlignment(HorizontalAlignment::Right); accessible_name(toggle, text);
+        Grid row; row.Height(std::max(24., font_line(10) + 2)); row.Margin({0, 7, 0, 7}); auto caption = label(text); caption.VerticalAlignment(VerticalAlignment::Center); row.Children().Append(caption);
+        ToggleSwitch toggle; toggle.IsOn(enabled); toggle.OnContent(box_value(L"")); toggle.OffContent(box_value(L"")); toggle.HorizontalAlignment(HorizontalAlignment::Right); accessible_name(toggle, text);
         row.Children().Append(toggle); panel.Children().Append(row); setting_switches[key] = toggle;
     };
     add_switch(interface_panel, "autostart", L"开机后自动启动", vb::autostart_enabled());
     setting_switches["autostart"].IsEnabled(!isolated);
     add_switch(interface_panel, "show_desktop_to_phone", L"显示电脑 → 手机", s["show_desktop_to_phone"]);
     add_switch(interface_panel, "show_char_count", L"显示累计输入字符数", s["show_char_count"]);
-    Grid count_row; count_row.Height(38); auto count = label((L"累计字符    当前 " + to_hstring(s["character_count"].dump()) + L" 个").c_str()); count.VerticalAlignment(VerticalAlignment::Center); count_row.Children().Append(count);
+    Grid count_row; count_row.Height(34); count_row.Margin({0, 6, 0, 0}); auto count = label((L"累计字符    当前 " + to_hstring(s["character_count"].dump()) + L" 个").c_str()); count.VerticalAlignment(VerticalAlignment::Center); count_row.Children().Append(count);
     auto clear = button(L"清零", [this, count] { config->update({{"character_count", 0}}); count.Text(L"累计字符    当前 0 个"); refresh_count(); }, 0, 70);
     clear.Height(34); clear.HorizontalAlignment(HorizontalAlignment::Right); clear.Background(palette(L"DangerBrush")); clear.Foreground(palette(L"DangerInkBrush")); count_row.Children().Append(clear); interface_panel.Children().Append(count_row);
-    content.Children().Append(card(interface_panel));
-    auto behavior = vertical(6); behavior.Children().Append(label(L"操作方式", L"CardTitleStyle"));
+    auto interface_card = card(interface_panel); interface_card.Margin({0, 0, 0, 12}); content.Children().Append(interface_card);
+    auto behavior = vertical(); auto behavior_title = label(L"操作方式", L"CardTitleStyle"); behavior_title.Height(font_line(11, true) + 4); behavior_title.Margin({0, 0, 0, 4}); behavior.Children().Append(behavior_title);
     add_switch(behavior, "confirm_enter", L"按下回车二次确认", s["confirm_enter"]);
     add_switch(behavior, "confirm_send", L"发送到电脑二次确认", s["confirm_send"]);
     auto choices = [&](wchar_t const* title, std::string* draft, std::vector<std::pair<std::wstring, std::string>> const& items, double width) {
-        behavior.Children().Append(label(title, L"CardTitleStyle")); auto row = horizontal();
+        auto heading = label(title, L"CardTitleStyle"); heading.Height(font_line(11, true) + 4); heading.Margin({0, draft == &draft_close ? 12. : 14., 0, 0}); behavior.Children().Append(heading);
+        auto row = horizontal(); row.Margin({0, 5, 0, 0});
         auto buttons = std::make_shared<std::vector<std::pair<weak_ref<Button>, std::string>>>();
         for (auto const& [caption, value] : items) {
             auto option = button(caption.c_str(), [this, draft, value, buttons] {
@@ -40,7 +41,7 @@ inline void App::open_settings() {
     choices(L"关闭主窗口时", &draft_close, {{L"每次询问", "ask"}, {L"最小化到托盘", "tray"}, {L"直接退出", "exit"}}, 112);
     choices(L"电脑发送快捷键", &draft_send, {{L"Ctrl + Enter 发送", "ctrl_enter"}, {L"Enter 发送", "enter"}}, 174);
     content.Children().Append(card(behavior));
-    auto actions = horizontal(); actions.HorizontalAlignment(HorizontalAlignment::Right);
+    auto actions = horizontal(); actions.HorizontalAlignment(HorizontalAlignment::Right); actions.Margin({0, 14, 0, 0});
     actions.Children().Append(button(L"保存设置", [this] {
         if (!isolated) vb::set_autostart(setting_switches.at("autostart").IsOn());
         vb::json values{{"close_action", draft_close}, {"send_mode", draft_send}};
@@ -48,8 +49,10 @@ inline void App::open_settings() {
         config->update(values); apply_settings(); settings_window.Close(); status("设置已保存");
     }, 0x2563EB));
     actions.Children().Append(button(L"取消", [this] { settings_window.Close(); }, 0, 94)); content.Children().Append(actions);
-    ScrollViewer scroll; scroll.Content(content); scroll.Background(palette(L"RootBrush"));
-    settings_window = secondary(L"声桥设置", scroll, 500, 660);
+    ScrollViewer scroll; scroll.Content(content); bind_color(scroll, Control::BackgroundProperty(), L"RootBrush");
+    const auto settings_width = std::max(500., std::floor(96 * ui_dpi_scale * 10 / 2.54) + 36);
+    content.Measure({static_cast<float>(settings_width - 36), std::numeric_limits<float>::infinity()});
+    settings_window = secondary(L"声桥设置", scroll, settings_width, std::max<double>(600., content.DesiredSize().Height));
     settings_window.Closed([this](auto&&, auto&&) { settings_window = nullptr; setting_switches.clear(); });
 }
 
@@ -68,7 +71,7 @@ inline void App::open_qr() {
     auto title = label(L"扫描二维码连接声桥", L"TitleStyle"); title.HorizontalAlignment(HorizontalAlignment::Center); content.Children().Append(title);
     auto subtitle = label(L"首次配对后请收藏手机页面", L"MutedStyle"); subtitle.HorizontalAlignment(HorizontalAlignment::Center); content.Children().Append(subtitle);
     qr_canvas = Canvas(); qr_canvas.Width(240); qr_canvas.Height(240); qr_canvas.Background(brush(0xffffff)); qr_canvas.HorizontalAlignment(HorizontalAlignment::Center); accessible_name(qr_canvas, L"手机配对二维码"); content.Children().Append(qr_canvas);
-    qr_address = TextBox(); qr_address.IsReadOnly(true); qr_address.FontSize(12); qr_address.TextAlignment(TextAlignment::Center); accessible_name(qr_address, L"手机访问地址"); content.Children().Append(qr_address);
+    qr_address = TextBox(); qr_address.IsReadOnly(true); qr_address.FontSize(12 * ui_dpi_scale); qr_address.TextAlignment(TextAlignment::Center); accessible_name(qr_address, L"手机访问地址"); content.Children().Append(qr_address);
     auto actions = horizontal(); actions.HorizontalAlignment(HorizontalAlignment::Center);
     actions.Children().Append(button(L"复制访问地址", [this] { vb::clipboard(vb::wide(bridge->url())); status("手机访问地址已复制"); }, 0, 132));
     actions.Children().Append(button(L"刷新地址", [this] { bridge->refresh(); draw_qr(); }, 0x2563EB, 116));
@@ -76,8 +79,10 @@ inline void App::open_qr() {
         auto result = MessageBoxW(window_handle(qr_window), L"旧的手机链接会立即失效，确定生成新链接吗？", L"重新配对", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2);
         if (result == IDYES) { bridge->rotate(); draw_qr(); status("配对链接已更新，请重新扫码"); }
     }); rotate.Background(palette(L"DangerBrush")); rotate.Foreground(palette(L"DangerInkBrush")); actions.Children().Append(rotate); content.Children().Append(actions);
-    Grid background; background.Background(palette(L"RootBrush")); background.Children().Append(content);
-    draw_qr(); qr_window = secondary(L"手机配对", background, 480, 450);
+    Grid background; bind_color(background, Panel::BackgroundProperty(), L"RootBrush"); background.Children().Append(content);
+    const auto pairing_width = std::max(480., std::round(420 * ui_dpi_scale));
+    content.Measure({static_cast<float>(pairing_width - 44), std::numeric_limits<float>::infinity()});
+    draw_qr(); qr_window = secondary(L"手机配对", background, pairing_width, std::max<double>(450., content.DesiredSize().Height));
     qr_window.AppWindow().Presenter().as<windowing::OverlappedPresenter>().IsResizable(false);
     qr_window.Closed([this](auto&&, auto&&) { qr_window = nullptr; qr_canvas = nullptr; qr_address = nullptr; });
 }
@@ -92,8 +97,9 @@ inline void App::request_close() {
     auto actions = horizontal(10);
     actions.Children().Append(button(L"最小化到托盘", [this] { minimize_to_tray(); }, 0x2563EB, 142));
     auto exit = button(L"直接关闭", [this] { exit_app(); }); exit.Background(palette(L"DangerBrush")); exit.Foreground(palette(L"DangerInkBrush")); actions.Children().Append(exit);
-    content.Children().Append(actions); Grid background; background.Background(palette(L"RootBrush")); background.Children().Append(content);
-    close_window = secondary(L"关闭声桥", background, 450, 180);
+    content.Children().Append(actions); Grid background; bind_color(background, Panel::BackgroundProperty(), L"RootBrush"); background.Children().Append(content);
+    content.Measure({std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity()});
+    close_window = secondary(L"关闭声桥", background, std::max<double>(450., content.DesiredSize().Width), std::max<double>(180., content.DesiredSize().Height));
     close_window.AppWindow().Presenter().as<windowing::OverlappedPresenter>().IsResizable(false);
     close_window.Closed([this](auto&&, auto&&) { close_window = nullptr; });
     content.KeyDown([this](auto&&, Input::KeyRoutedEventArgs const& args) {
@@ -125,9 +131,9 @@ inline LRESULT CALLBACK App::window_proc(HWND hwnd, UINT message, WPARAM wparam,
     auto self = reinterpret_cast<App*>(data);
     if (message == WM_CLOSE) { self->safe([&] { self->request_close(); }); return 0; }
     if (message == WM_GETMINMAXINFO) {
-        auto limits = reinterpret_cast<MINMAXINFO*>(lparam); auto scale = GetDpiForWindow(hwnd) / 96.0;
-        RECT frame{0, 0, LONG(520 * scale), LONG((self->expanded ? 540 : self->collapsed_height) * scale)};
-        if (self->animating) frame.bottom = LONG(330 * scale);
+        auto limits = reinterpret_cast<MINMAXINFO*>(lparam);
+        RECT frame{0, 0, 520, LONG(self->expanded ? self->collapsed_height + 180 : self->collapsed_height)};
+        if (self->animating) frame.bottom = 330;
         AdjustWindowRectExForDpi(&frame, static_cast<DWORD>(GetWindowLongPtrW(hwnd, GWL_STYLE)), FALSE, static_cast<DWORD>(GetWindowLongPtrW(hwnd, GWL_EXSTYLE)), GetDpiForWindow(hwnd));
         limits->ptMinTrackSize = {frame.right - frame.left, frame.bottom - frame.top};
         if (!self->expanded && !self->animating) limits->ptMaxTrackSize.y = limits->ptMinTrackSize.y;

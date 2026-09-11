@@ -185,12 +185,20 @@ inline void send_keys(std::initializer_list<std::pair<WORD, bool>> keys) {
         throw std::runtime_error("Windows 阻止了向当前光标输入文字");
     }
 }
-inline void paste_text(std::string const& text) {
-    auto target = require_input_target(); clipboard(wide(text));
+inline void paste_text_to(std::string const& text, HWND expected_window) {
+    auto target = require_input_target();
+    if (expected_window && target.front() != reinterpret_cast<int64_t>(expected_window)) throw NoInputFocus("测试输入窗口未获得焦点，未发送任何按键");
+    clipboard(wide(text));
     if (require_input_target() != target) throw NoInputFocus("电脑端输入光标已变化，请重新点击输入框后再发送");
-    send_keys({{VK_CONTROL, false}, {'V', false}, {'V', true}, {VK_CONTROL, true}});
+    send_keys({{WORD(VK_CONTROL), false}, {WORD('V'), false}, {WORD('V'), true}, {WORD(VK_CONTROL), true}});
 }
-inline void press_enter() { require_input_target(); send_keys({{VK_RETURN, false}, {VK_RETURN, true}}); }
+inline void paste_text(std::string const& text) { paste_text_to(text, nullptr); }
+inline void press_enter_to(HWND expected_window) {
+    auto target = require_input_target();
+    if (expected_window && target.front() != reinterpret_cast<int64_t>(expected_window)) throw NoInputFocus("测试输入窗口未获得焦点，未发送任何按键");
+    send_keys({{WORD(VK_RETURN), false}, {WORD(VK_RETURN), true}});
+}
+inline void press_enter() { press_enter_to(nullptr); }
 
 struct Address { std::string ip; bool gateway; };
 inline std::vector<Address> addresses() {

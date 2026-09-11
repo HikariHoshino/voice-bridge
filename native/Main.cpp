@@ -1,6 +1,7 @@
 #include "NativeApp.h"
 #include "SecondaryWindows.h"
 #include "NativeTests.h"
+#include "UiTests.h"
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     HANDLE mutex{};
@@ -15,6 +16,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
             else if (argument == L"--port" && i + 1 < count) override_port = std::stoi(args[++i]);
             else if (argument == L"--bind" && i + 1 < count) override_bind = vb::utf8(args[++i]);
             else if (argument == L"--self-test" && i + 1 < count) test_report = args[++i];
+            else if (argument == L"--ui-self-test" && i + 1 < count) {
+                ui_test_report = args[++i]; isolated = true; override_bind = "127.0.0.1";
+                config_path = ui_test_report.parent_path() / ("ui-" + vb::random_token(8) + ".json");
+            }
             else throw std::runtime_error("Unknown command line argument");
         }
         LocalFree(args); init_apartment(apartment_type::single_threaded);
@@ -30,7 +35,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
             catch (hresult_error const& error) { log_error(error.message()); throw; }
             catch (std::exception const& error) { log_error(to_hstring(error.what())); throw; }
         });
-        CloseHandle(activation_event); CloseHandle(activation_ack); CloseHandle(mutex); return 0;
+        CloseHandle(activation_event); CloseHandle(activation_ack); CloseHandle(mutex); return ui_test_exit_code;
     } catch (hresult_error const& error) { MessageBoxW(nullptr, error.message().c_str(), L"声桥启动失败", MB_OK | MB_ICONERROR); }
       catch (std::exception const& error) { MessageBoxW(nullptr, vb::wide(error.what()).c_str(), L"声桥启动失败", MB_OK | MB_ICONERROR); }
     if (mutex) CloseHandle(mutex); return 1;

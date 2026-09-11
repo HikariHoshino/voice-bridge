@@ -28,6 +28,7 @@
 #include <winrt/Microsoft.UI.Xaml.XamlTypeInfo.h>
 #include <winrt/Windows.UI.Xaml.Interop.h>
 #include "vendor/qrcodegen.hpp"
+#include <regex>
 using namespace winrt;
 using namespace Microsoft::UI::Xaml;
 using namespace Microsoft::UI::Xaml::Controls;
@@ -40,6 +41,8 @@ inline vb::fs::path config_path;
 inline bool isolated = false;
 inline int override_port = 0;
 inline std::string override_bind;
+inline vb::fs::path ui_test_report;
+inline int ui_test_exit_code = 0;
 inline HANDLE activation_event{}, activation_ack{};
 inline void log_error(hstring const& message) {
     vb::fs::create_directories(config_path.parent_path());
@@ -47,12 +50,43 @@ inline void log_error(hstring const& message) {
     log << to_string(message) << '\n';
 }
 inline HWND window_handle(Window const& window) { HWND hwnd{}; check_hresult(window.as<IWindowNative>()->get_WindowHandle(&hwnd)); return hwnd; }
+inline double ui_dpi_scale = 1;
+inline double font_line(int points, bool bold = false) {
+    auto dc = GetDC(nullptr);
+    auto font = CreateFontW(-MulDiv(points, static_cast<int>(96 * ui_dpi_scale), 72), 0, 0, 0, bold ? FW_BOLD : FW_NORMAL,
+        FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei UI");
+    auto previous = SelectObject(dc, font); TEXTMETRICW metrics{}; GetTextMetricsW(dc, &metrics);
+    SelectObject(dc, previous); DeleteObject(font); ReleaseDC(nullptr, dc); return metrics.tmHeight;
+}
+inline std::wstring scaled_font_xaml(std::string const& source) {
+    auto input = vb::wide(source);
+    for (auto const& pattern : {std::wregex(L"(FontSize=['\"])([0-9.]+)(['\"])", std::regex::ECMAScript), std::wregex(L"(Property=\"FontSize\" Value=\")([0-9.]+)(\")", std::regex::ECMAScript)}) {
+        std::wstring result; size_t position = 0;
+        for (auto match = std::wsregex_iterator(input.begin(), input.end(), pattern); match != std::wsregex_iterator(); ++match) {
+            result += input.substr(position, match->position() - position);
+            result += (*match)[1].str() + std::to_wstring(std::stod((*match)[2].str()) * ui_dpi_scale) + (*match)[3].str();
+            position = match->position() + match->length();
+        }
+        input = result + input.substr(position);
+    }
+    return input;
+}
+inline Grid pixel_host(FrameworkElement const& content, double width, double height) {
+    // Match Tk's physical-pixel card geometry and separately DPI-scaled fonts.
+    Grid host; Viewbox view; view.Stretch(Stretch::Fill); content.Width(width); content.Height(height); view.Child(content); host.Children().Append(view);
+    host.SizeChanged([weak = make_weak(content)](auto const& sender, auto&&) {
+        if (auto surface = weak.get()) {
+            auto host = sender.template as<FrameworkElement>(); auto scale = host.XamlRoot() ? host.XamlRoot().RasterizationScale() : ui_dpi_scale;
+            surface.Width(host.ActualWidth() * scale); surface.Height(host.ActualHeight() * scale);
+        }
+    });
+    return host;
+}
 inline SolidColorBrush brush(uint32_t rgb) { return SolidColorBrush(Windows::UI::Color{255, BYTE(rgb >> 16), BYTE(rgb >> 8), BYTE(rgb)}); }
 inline UIElement xaml(std::wstring const& source) { return Markup::XamlReader::Load(source).as<UIElement>(); }
 inline void accessible_name(DependencyObject const& object, wchar_t const* label) { Automation::AutomationProperties::SetName(object, label); }
 inline void client_size(Window const& window, double width, double height) {
-    double scale = GetDpiForWindow(window_handle(window)) / 96.0;
-    window.AppWindow().ResizeClient({int32_t(std::lround(width * scale)), int32_t(std::lround(height * scale))});
+    window.AppWindow().ResizeClient({int32_t(std::lround(width)), int32_t(std::lround(height))});
 }
 inline void center(Window const& window, HWND owner = nullptr) {
     auto hwnd = window_handle(window); RECT rect{}, anchor{}; GetWindowRect(hwnd, &rect);
@@ -89,6 +123,7 @@ struct App : ApplicationT<App, Markup::IXamlMetadataProvider> {
     }
     Window window{nullptr}, settings_window{nullptr}, qr_window{nullptr}, close_window{nullptr};
     Grid root{nullptr};
+    ResourceDictionary theme_resources{nullptr};
     std::unique_ptr<vb::Config> config;
     std::unique_ptr<vb::Bridge> bridge;
     Microsoft::UI::Dispatching::DispatcherQueue dispatcher{nullptr};
@@ -96,15 +131,22 @@ struct App : ApplicationT<App, Markup::IXamlMetadataProvider> {
     std::thread initialization;
     bool closing = false, expanded = false, animating = false, dark = false;
     double collapsed_height = 360, expanded_height = 540;
+    double initial_width = 580;
     std::chrono::steady_clock::time_point animation_start;
     double animation_from{}, animation_to{};
     event_token rendering{};
     NOTIFYICONDATAW tray{};
     HICON app_icon{};
+    std::wstring startup_stage;
     TextBox qr_address{nullptr};
     Canvas qr_canvas{nullptr};
     std::map<std::string, ToggleSwitch> setting_switches;
     std::string draft_close, draft_send;
+    struct ThemeBinding { weak_ref<DependencyObject> object; DependencyProperty property; hstring key; };
+    std::vector<ThemeBinding> theme_bindings;
+    void bind_color(DependencyObject const& object, DependencyProperty const& property, wchar_t const* key) {
+        object.SetValue(property, palette(key)); theme_bindings.push_back({make_weak(object), property, key});
+    }
     App() {
         UnhandledException([](auto&&, UnhandledExceptionEventArgs const& args) { log_error(args.Message()); });
     }
@@ -126,7 +168,7 @@ struct App : ApplicationT<App, Markup::IXamlMetadataProvider> {
         find<TextBlock>(L"CountText").Text(L"累计输入 " + to_hstring(s["character_count"].dump()) + L" 个字符");
     }
     Brush palette(wchar_t const* key) {
-        auto dictionary = root.Resources().ThemeDictionaries().Lookup(box_value(dark ? L"Dark" : L"Light")).as<ResourceDictionary>();
+        auto dictionary = theme_resources.ThemeDictionaries().Lookup(box_value(dark ? L"Dark" : L"Light")).as<ResourceDictionary>();
         return dictionary.Lookup(box_value(key)).as<Brush>();
     }
     void chrome(Window const& target) {
@@ -150,17 +192,18 @@ struct App : ApplicationT<App, Markup::IXamlMetadataProvider> {
     void draw_qr();
     void request_close();
     void initialize_tray();
+    fire_and_forget run_ui_tests();
     void exit_app();
     void minimize_to_tray();
     void restore() { ShowWindow(window_handle(window), SW_RESTORE); window.Activate(); SetForegroundWindow(window_handle(window)); }
     Window secondary(wchar_t const* title, FrameworkElement const& content, double width, double height) {
-        auto target = Window(); target.Title(title); target.Content(content); content.Resources(root.Resources());
+        auto target = Window(); target.Title(title); target.Content(pixel_host(content, width, height));
         SetWindowLongPtrW(window_handle(target), GWLP_HWNDPARENT, reinterpret_cast<LONG_PTR>(window_handle(window)));
         chrome(target); client_size(target, width, height); center(target, window_handle(window)); target.Activate(); ShowWindow(window_handle(target), SW_SHOW); return target;
     }
     TextBlock label(wchar_t const* text, wchar_t const* style = nullptr) {
         TextBlock result; result.Text(text);
-        if (style) result.Style(root.Resources().Lookup(box_value(style)).as<Style>());
+        if (style) result.Style(theme_resources.Lookup(box_value(style)).as<Style>());
         return result;
     }
     Button button(wchar_t const* text, std::function<void()> action, uint32_t color = 0, double width = 112) {
@@ -170,20 +213,44 @@ struct App : ApplicationT<App, Markup::IXamlMetadataProvider> {
     }
     StackPanel vertical(double spacing = 0) { StackPanel panel; panel.Spacing(spacing); return panel; }
     StackPanel horizontal(double spacing = 8) { auto panel = vertical(spacing); panel.Orientation(Orientation::Horizontal); return panel; }
-    Border card(UIElement const& child) { Border result; result.CornerRadius(CornerRadius(22)); result.Padding(Thickness(16)); result.Background(palette(L"CardBrush")); result.Child(child); return result; }
+    Border card(UIElement const& child) { Border result; result.CornerRadius(CornerRadius(22)); result.Padding(Thickness(27)); bind_color(result, Border::BackgroundProperty(), L"CardBrush"); result.Child(child); return result; }
     static LRESULT CALLBACK window_proc(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
 };
 
 inline void App::OnLaunched(LaunchActivatedEventArgs const&) try {
+    startup_stage = L"controls resources";
     Resources().MergedDictionaries().Append(XamlControlsResources());
     config = std::make_unique<vb::Config>(config_path); dark = config->settings()["theme"] == "dark";
     window = Window(); window.Title(L"声桥 · Windows 原生版（测试版）"); dispatcher = window.DispatcherQueue();
+    ui_dpi_scale = GetDpiForWindow(window_handle(window)) / 96.0;
     app_icon = static_cast<HICON>(LoadImageW(nullptr, (vb::executable_dir() / "assets/voice-bridge.ico").c_str(), IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE));
-    auto theme = Markup::XamlReader::Load(to_hstring(vb::read_file(vb::executable_dir() / "Theme.xaml"))).as<ResourceDictionary>();
-    Resources().MergedDictionaries().Append(theme);
-    root = xaml(vb::wide(vb::read_file(vb::executable_dir() / "Main.xaml"))).as<Grid>();
-    root.Resources(theme); window.Content(root);
+    startup_stage = L"theme dictionary";
+    theme_resources = Markup::XamlReader::Load(scaled_font_xaml(vb::read_file(vb::executable_dir() / "Theme.xaml"))).as<ResourceDictionary>();
+    Resources().MergedDictionaries().Append(theme_resources);
+    startup_stage = L"main XAML";
+    root = xaml(scaled_font_xaml(vb::read_file(vb::executable_dir() / "Main.xaml"))).as<Grid>();
+    startup_stage = L"attach content";
+    const auto title_height = font_line(22, true) + 4;
+    const auto subtitle_height = font_line(10) + 4;
+    const auto card_title_height = font_line(11, true) + 4;
+    const auto muted_height = font_line(9) + 4;
+    const auto header_height = title_height + subtitle_height + 2;
+    const auto card_height = card_title_height + muted_height + 2 + 54;
+    const auto status_height = std::max(muted_height, font_line(10) + 2) + 30;
+    initial_width = std::max(580., std::floor(96 * ui_dpi_scale * 10 / 2.54) + 60);
+    collapsed_height = std::max(360., 36 + header_height + 14 + 2 * (card_height + 12) + status_height + 20);
+    expanded_height = collapsed_height + 12 + (5 * font_line(10) + 24) + 10 + 42;
+    find<TextBlock>(L"MainTitle").Height(title_height); find<TextBlock>(L"Subtitle").Height(subtitle_height);
+    for (auto id : {L"ConnectionTitle", L"TransferTitle"}) find<TextBlock>(id).Height(card_title_height);
+    for (auto id : {L"ConnectionSubtitle", L"TransferSubtitle"}) find<TextBlock>(id).Height(muted_height);
+    auto rows = find<Grid>(L"Layout").RowDefinitions();
+    rows.GetAt(0).Height({header_height + 14, GridUnitType::Pixel}); rows.GetAt(1).Height({card_height + 12, GridUnitType::Pixel}); rows.GetAt(3).Height({status_height, GridUnitType::Pixel});
+    find<Grid>(L"TransferLayout").RowDefinitions().GetAt(0).Height({card_height - 54, GridUnitType::Pixel});
+    find<Border>(L"TransferCard").MinHeight(card_height);
+    window.Content(pixel_host(root, initial_width, collapsed_height));
+    startup_stage = L"logo image";
     find<Image>(L"Logo").Source(Imaging::BitmapImage(Uri(L"file:///" + (vb::executable_dir() / L"assets/voice-bridge.png").generic_wstring())));
+    startup_stage = L"button icons";
     icon(find<Button>(L"SettingsButton"), L"settings"); icon(find<Button>(L"PauseButton"), L"pause");
     icon(find<Button>(L"QrButton"), L"qr"); icon(find<Button>(L"TransferButton"), L"down");
     find<Button>(L"SettingsButton").Click([this](auto&&, auto&&) { safe([&] { open_settings(); }); });
@@ -204,18 +271,24 @@ inline void App::OnLaunched(LaunchActivatedEventArgs const&) try {
         if (args.Key() == Windows::System::VirtualKey::Enter && !(GetKeyState(VK_CONTROL) & 0x8000) && config->settings()["send_mode"] == "enter") { args.Handled(true); safe([&] { send(); }); }
     });
     SetWindowSubclass(window_handle(window), &App::window_proc, 1, reinterpret_cast<DWORD_PTR>(this));
-    apply_settings(); chrome(window); client_size(window, 580, collapsed_height); center(window);
+    startup_stage = L"apply settings";
+    apply_settings(); chrome(window);
+    startup_stage = L"window dimensions";
+    client_size(window, initial_width, collapsed_height); center(window);
+    startup_stage = L"activate window";
     window.Activate(); ShowWindow(window_handle(window), SW_SHOW); initialize_tray(); status("正在连接本机服务…");
     for (auto id : {L"QrButton", L"PauseButton", L"SendButton"}) find<Button>(id).IsEnabled(false);
     poll = dispatcher.CreateTimer(); poll.Interval(100ms);
     poll.Tick([this](auto&&, auto&&) {
         if (activation_event && WaitForSingleObject(activation_event, 0) == WAIT_OBJECT_0) { ResetEvent(activation_event); restore(); if (activation_ack) SetEvent(activation_ack); }
     }); poll.Start();
-    initialization = std::thread([this] {
+    auto input_test_window = ui_test_report.empty() ? nullptr : window_handle(window);
+    initialization = std::thread([this, input_test_window] {
         try {
-            auto next = std::make_shared<std::unique_ptr<vb::Bridge>>(std::make_unique<vb::Bridge>(*config, vb::executable_dir(), vb::paste_text, vb::press_enter,
+            auto next = std::make_shared<std::unique_ptr<vb::Bridge>>(std::make_unique<vb::Bridge>(*config, vb::executable_dir(),
+                [input_test_window](auto const& text) { vb::paste_text_to(text, input_test_window); }, [input_test_window] { vb::press_enter_to(input_test_window); },
                 [this](auto const& message) { dispatcher.TryEnqueue([this, message] { status(message); }); }));
-            if (!override_bind.empty()) { (*next)->displayed_ip = override_bind; (*next)->bind(override_bind, override_port ? override_port : 18765); }
+            if (!override_bind.empty()) { (*next)->displayed_ip = override_bind; (*next)->bind(override_bind, !ui_test_report.empty() ? 0 : override_port ? override_port : 18765); }
             else { if (override_port) (*next)->port = override_port; (*next)->start(); }
             dispatcher.TryEnqueue([this, next] {
                 if (closing) return; bridge = std::move(*next);
@@ -225,7 +298,8 @@ inline void App::OnLaunched(LaunchActivatedEventArgs const&) try {
         } catch (std::exception const& error) { auto message = std::string(error.what()); dispatcher.TryEnqueue([this, message] { status("启动失败：" + message); }); }
           catch (hresult_error const& error) { auto message = to_string(error.message()); dispatcher.TryEnqueue([this, message] { status("启动失败：" + message); }); }
     });
-} catch (hresult_error const& error) { log_error(error.message()); MessageBoxW(nullptr, error.message().c_str(), L"声桥启动失败", MB_OK | MB_ICONERROR); Exit(); }
+    if (!ui_test_report.empty()) run_ui_tests();
+} catch (hresult_error const& error) { auto message = hstring(startup_stage) + L": " + error.message(); log_error(message); if (!isolated) MessageBoxW(nullptr, message.c_str(), L"声桥启动失败", MB_OK | MB_ICONERROR); Exit(); }
   catch (std::exception const& error) { log_error(to_hstring(error.what())); MessageBoxW(nullptr, to_hstring(error.what()).c_str(), L"声桥启动失败", MB_OK | MB_ICONERROR); Exit(); }
 inline void App::update_pause() {
     auto b = find<Button>(L"PauseButton");
@@ -238,6 +312,7 @@ inline void App::apply_settings() {
     find<TextBlock>(L"ShortcutHint").Text(s["send_mode"] == "ctrl_enter" ? L"Ctrl + Enter 发送 · Enter 换行" : L"Enter 发送 · Ctrl + Enter 换行");
     find<TextBlock>(L"CountText").Visibility(s["show_char_count"].get<bool>() ? Visibility::Visible : Visibility::Collapsed);
     find<Border>(L"TransferCard").Visibility(s["show_desktop_to_phone"].get<bool>() ? Visibility::Visible : Visibility::Collapsed);
+    find<Grid>(L"Layout").RowDefinitions().GetAt(2).Height(s["show_desktop_to_phone"].get<bool>() ? GridLength{1, GridUnitType::Star} : GridLength{0, GridUnitType::Pixel});
     if (!s["show_desktop_to_phone"].get<bool>() && expanded) { expanded = false; find<Grid>(L"TransferContent").Visibility(Visibility::Collapsed); }
     icon(find<Button>(L"TransferButton"), expanded ? L"up" : L"down");
     icon(find<Button>(L"ThemeButton"), dark ? L"sun" : L"moon"); refresh_count();
@@ -245,6 +320,10 @@ inline void App::apply_settings() {
 inline void App::change_theme() {
     dark = !dark; config->update({{"theme", dark ? "dark" : "light"}});
     for (auto const& w : {window, settings_window, qr_window, close_window}) if (w) chrome(w);
+    std::erase_if(theme_bindings, [this](auto const& binding) {
+        if (auto object = binding.object.get()) { object.SetValue(binding.property, palette(binding.key.c_str())); return false; }
+        return true;
+    });
     icon(find<Button>(L"ThemeButton"), dark ? L"sun" : L"moon"); icon(find<Button>(L"SettingsButton"), L"settings");
     icon(find<Button>(L"QrButton"), L"qr"); icon(find<Button>(L"TransferButton"), expanded ? L"up" : L"down");
     if (bridge) update_pause();
@@ -259,8 +338,8 @@ inline void App::send() {
 }
 inline void App::toggle_transfer() {
     if (animating || closing) return;
-    RECT rect{}; GetClientRect(window_handle(window), &rect); auto scale = GetDpiForWindow(window_handle(window)) / 96.0;
-    animation_from = rect.bottom / scale;
+    RECT rect{}; GetClientRect(window_handle(window), &rect);
+    animation_from = rect.bottom;
     if (!expanded) { collapsed_height = animation_from; animation_to = expanded_height = std::max(expanded_height, collapsed_height + 180); }
     else { expanded_height = animation_from; animation_to = collapsed_height; }
     expanded = !expanded; animating = true; animation_start = std::chrono::steady_clock::now();
@@ -274,8 +353,8 @@ inline void App::toggle_transfer() {
     rendering = CompositionTarget::Rendering([this](auto&&, auto&&) {
         auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - animation_start).count();
         auto t = std::min(1.0, elapsed / .2), progress = t * t * (3 - 2 * t);
-        RECT rect{}; GetClientRect(window_handle(window), &rect); auto scale = GetDpiForWindow(window_handle(window)) / 96.0;
-        client_size(window, rect.right / scale, animation_from + (animation_to - animation_from) * progress);
+        RECT rect{}; GetClientRect(window_handle(window), &rect);
+        client_size(window, rect.right, animation_from + (animation_to - animation_from) * progress);
         if (t >= 1) {
             CompositionTarget::Rendering(rendering); animating = false;
             find<Grid>(L"TransferContent").Visibility(expanded ? Visibility::Visible : Visibility::Collapsed);
