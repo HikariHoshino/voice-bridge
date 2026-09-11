@@ -12,6 +12,10 @@ env/
 
 /build*/
 /dist*/
+/native/build/
+/native/VoiceBridge/obj/
+/native/VoiceBridge/XamlMetaDataProvider.cpp
+/native/VoiceBridge/XamlMetaDataProvider.idl
 
 /ui-check.png
 /final-ui-check.png

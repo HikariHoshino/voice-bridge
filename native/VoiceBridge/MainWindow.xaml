@@ -1,0 +1,131 @@
+<Window
+    x:Class="VoiceBridge.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Grid x:Name="RootGrid" Background="{ThemeResource RootBrush}">
+        <ScrollViewer VerticalScrollBarVisibility="Auto">
+            <StackPanel x:Name="MainPanel" Margin="30,24,30,20" Spacing="14">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Spacing="2">
+                        <TextBlock Text="声桥" FontFamily="Microsoft YaHei UI" FontSize="29.3" FontWeight="Bold" Foreground="{ThemeResource InkBrush}" />
+                        <TextBlock Text="用手机说，在电脑上写" FontFamily="Microsoft YaHei UI" FontSize="13.3" Foreground="{ThemeResource MutedBrush}" />
+                    </StackPanel>
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Top">
+                        <Button x:Name="ThemeButton" Width="42" Height="42" CornerRadius="15" Background="{ThemeResource SecondaryBrush}" BorderThickness="0" ToolTipService.ToolTip="切换主题" Click="ThemeButton_Click">
+                            <FontIcon x:Name="ThemeIcon" Glyph="&#xE706;" FontSize="16" Foreground="{ThemeResource InkBrush}" />
+                        </Button>
+                        <Button x:Name="SettingsButton" Width="42" Height="42" CornerRadius="15" Background="{ThemeResource SecondaryBrush}" BorderThickness="0" ToolTipService.ToolTip="设置">
+                            <FontIcon Glyph="&#xE713;" FontSize="16" Foreground="{ThemeResource InkBrush}" />
+                        </Button>
+                    </StackPanel>
+                </Grid>
+
+                <Border Background="{ThemeResource StatusBrush}" CornerRadius="22" Padding="18,13">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Spacing="2">
+                            <TextBlock x:Name="StatusText" Text="正在启动本地服务…" FontFamily="Microsoft YaHei UI" FontSize="14.7" FontWeight="SemiBold" Foreground="{ThemeResource StatusInkBrush}" />
+                            <TextBlock Text="手机和电脑需要连接同一个 Wi-Fi" FontFamily="Microsoft YaHei UI" FontSize="12" Foreground="{ThemeResource MutedBrush}" />
+                        </StackPanel>
+                        <Button x:Name="PauseButton" Grid.Column="1" Width="42" Height="42" CornerRadius="15" Background="{ThemeResource SecondaryBrush}" BorderThickness="0" ToolTipService.ToolTip="暂停手机输入电脑">
+                            <FontIcon Glyph="&#xE769;" FontSize="15" Foreground="{ThemeResource InkBrush}" />
+                        </Button>
+                    </Grid>
+                </Border>
+
+                <Border Background="{ThemeResource CardBrush}" CornerRadius="22" Padding="18,16">
+                    <StackPanel Spacing="10">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Spacing="2">
+                                <TextBlock Text="手机配对" FontFamily="Microsoft YaHei UI" FontSize="14.7" FontWeight="SemiBold" Foreground="{ThemeResource InkBrush}" />
+                                <TextBlock Text="扫描二维码或复制链接到手机浏览器" FontFamily="Microsoft YaHei UI" FontSize="12" Foreground="{ThemeResource MutedBrush}" />
+                            </StackPanel>
+                            <Button x:Name="QrButton" Grid.Column="1" MinWidth="94" Height="38" Padding="13,0" CornerRadius="14" Background="{ThemeResource SecondaryBrush}" BorderThickness="0">
+                                <StackPanel Orientation="Horizontal" Spacing="7">
+                                    <FontIcon Glyph="&#xE8A5;" FontSize="14" Foreground="{ThemeResource InkBrush}" />
+                                    <TextBlock Text="二维码" VerticalAlignment="Center" Foreground="{ThemeResource InkBrush}" />
+                                </StackPanel>
+                            </Button>
+                        </Grid>
+                        <Grid ColumnSpacing="8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <Border Background="{ThemeResource SecondaryBrush}" CornerRadius="12" Padding="12,9">
+                                <TextBlock x:Name="PairingUrlText" Text="http://192.168.1.2:8765/?token=…" TextTrimming="CharacterEllipsis" FontFamily="Consolas" FontSize="12" Foreground="{ThemeResource InkBrush}" />
+                            </Border>
+                            <Button x:Name="CopyUrlButton" Grid.Column="1" Width="38" Height="38" CornerRadius="13" Background="{ThemeResource SecondaryBrush}" BorderThickness="0" ToolTipService.ToolTip="复制链接">
+                                <FontIcon Glyph="&#xE8C8;" FontSize="14" Foreground="{ThemeResource InkBrush}" />
+                            </Button>
+                            <Button x:Name="RefreshAddressButton" Grid.Column="2" Width="38" Height="38" CornerRadius="13" Background="{ThemeResource SecondaryBrush}" BorderThickness="0" ToolTipService.ToolTip="刷新地址">
+                                <FontIcon Glyph="&#xE72C;" FontSize="14" Foreground="{ThemeResource InkBrush}" />
+                            </Button>
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <Border x:Name="TransferCard" Background="{ThemeResource CardBrush}" CornerRadius="22" Padding="18,14">
+                    <StackPanel>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Spacing="2">
+                                <TextBlock Text="电脑 → 手机" FontFamily="Microsoft YaHei UI" FontSize="14.7" FontWeight="SemiBold" Foreground="{ThemeResource InkBrush}" />
+                                <TextBlock x:Name="ShortcutHint" Text="Ctrl + Enter 快速发送" FontFamily="Microsoft YaHei UI" FontSize="12" Foreground="{ThemeResource MutedBrush}" />
+                            </StackPanel>
+                            <Button x:Name="TransferToggleButton" Grid.Column="1" Width="38" Height="38" CornerRadius="13" Background="{ThemeResource SecondaryBrush}" BorderThickness="0" ToolTipService.ToolTip="展开" Click="TransferToggleButton_Click">
+                                <FontIcon x:Name="TransferToggleIcon" Glyph="&#xE70D;" FontSize="14" Foreground="{ThemeResource InkBrush}" />
+                            </Button>
+                        </Grid>
+                        <Grid x:Name="TransferContent" Height="0" Opacity="0" Visibility="Collapsed">
+                            <StackPanel Padding="0,12,0,0" Spacing="10">
+                                <TextBox x:Name="DesktopText" MinHeight="112" Padding="12,8" TextWrapping="Wrap" AcceptsReturn="True" FontFamily="Microsoft YaHei UI" FontSize="13.3" Foreground="{ThemeResource InkBrush}" Background="{ThemeResource InputBrush}" BorderBrush="{ThemeResource LineBrush}" CornerRadius="12" PlaceholderText="输入要发送到手机页面光标的文字…" />
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="文字仅保存在内存，退出后清空" VerticalAlignment="Center" FontFamily="Microsoft YaHei UI" FontSize="12" Foreground="{ThemeResource MutedBrush}" />
+                                    <Button x:Name="SendToPhoneButton" Grid.Column="1" MinWidth="154" Height="42" Padding="15,0" CornerRadius="15" Background="{StaticResource PrimaryBrush}" BorderThickness="0">
+                                        <TextBlock Text="发送到手机页面光标" Foreground="White" />
+                                    </Button>
+                                </Grid>
+                            </StackPanel>
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Button x:Name="RotatePairingButton" Height="38" Padding="13,0" CornerRadius="14" Background="{ThemeResource DangerBrush}" BorderThickness="0">
+                            <StackPanel Orientation="Horizontal" Spacing="7">
+                                <FontIcon Glyph="&#xE72C;" FontSize="14" Foreground="{ThemeResource DangerInkBrush}" />
+                                <TextBlock Text="重新配对" Foreground="{ThemeResource DangerInkBrush}" />
+                            </StackPanel>
+                        </Button>
+                    </StackPanel>
+                    <TextBlock x:Name="CharacterCountText" Grid.Column="1" Text="累计输入 0 个字符" VerticalAlignment="Center" FontFamily="Microsoft YaHei UI" FontSize="12" Foreground="{ThemeResource MutedBrush}" />
+                </Grid>
+            </StackPanel>
+        </ScrollViewer>
+    </Grid>
+</Window>

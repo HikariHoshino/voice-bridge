@@ -1,0 +1,55 @@
+<Application
+    x:Class="VoiceBridge.App"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Application.Resources>
+        <ResourceDictionary>
+            <Color x:Key="RootLightColor">#FFF3F6FB</Color>
+            <Color x:Key="RootDarkColor">#FF0F172A</Color>
+            <Color x:Key="CardLightColor">#FFFFFFFF</Color>
+            <Color x:Key="CardDarkColor">#FF182235</Color>
+            <Color x:Key="InkLightColor">#FF132238</Color>
+            <Color x:Key="InkDarkColor">#FFE5EDF8</Color>
+            <Color x:Key="MutedLightColor">#FF64748B</Color>
+            <Color x:Key="MutedDarkColor">#FF9CAFC5</Color>
+            <Color x:Key="LineLightColor">#FFDBE4F0</Color>
+            <Color x:Key="LineDarkColor">#FF334155</Color>
+            <Color x:Key="SecondaryLightColor">#FFEDF2F8</Color>
+            <Color x:Key="SecondaryDarkColor">#FF263449</Color>
+            <Color x:Key="StatusLightColor">#FFE8F7F0</Color>
+            <Color x:Key="StatusDarkColor">#FF15352F</Color>
+            <SolidColorBrush x:Key="PrimaryBrush" Color="#FF2563EB" />
+            <SolidColorBrush x:Key="TealBrush" Color="#FF0F766E" />
+            <SolidColorBrush x:Key="DangerLightBrush" Color="#FFFFF1F2" />
+            <SolidColorBrush x:Key="DangerDarkBrush" Color="#FF3B202B" />
+            <ResourceDictionary.ThemeDictionaries>
+                <ResourceDictionary x:Key="Light">
+                    <SolidColorBrush x:Key="RootBrush" Color="{StaticResource RootLightColor}" />
+                    <SolidColorBrush x:Key="CardBrush" Color="{StaticResource CardLightColor}" />
+                    <SolidColorBrush x:Key="InkBrush" Color="{StaticResource InkLightColor}" />
+                    <SolidColorBrush x:Key="MutedBrush" Color="{StaticResource MutedLightColor}" />
+                    <SolidColorBrush x:Key="LineBrush" Color="{StaticResource LineLightColor}" />
+                    <SolidColorBrush x:Key="SecondaryBrush" Color="{StaticResource SecondaryLightColor}" />
+                    <SolidColorBrush x:Key="StatusBrush" Color="{StaticResource StatusLightColor}" />
+                    <SolidColorBrush x:Key="StatusInkBrush" Color="#FF176B4D" />
+                    <SolidColorBrush x:Key="DangerBrush" Color="#FFFFF1F2" />
+                    <SolidColorBrush x:Key="DangerInkBrush" Color="#FFBE123C" />
+                    <SolidColorBrush x:Key="InputBrush" Color="#FFFFFFFF" />
+                </ResourceDictionary>
+                <ResourceDictionary x:Key="Dark">
+                    <SolidColorBrush x:Key="RootBrush" Color="{StaticResource RootDarkColor}" />
+                    <SolidColorBrush x:Key="CardBrush" Color="{StaticResource CardDarkColor}" />
+                    <SolidColorBrush x:Key="InkBrush" Color="{StaticResource InkDarkColor}" />
+                    <SolidColorBrush x:Key="MutedBrush" Color="{StaticResource MutedDarkColor}" />
+                    <SolidColorBrush x:Key="LineBrush" Color="{StaticResource LineDarkColor}" />
+                    <SolidColorBrush x:Key="SecondaryBrush" Color="{StaticResource SecondaryDarkColor}" />
+                    <SolidColorBrush x:Key="StatusBrush" Color="{StaticResource StatusDarkColor}" />
+                    <SolidColorBrush x:Key="StatusInkBrush" Color="#FF6EE7B7" />
+                    <SolidColorBrush x:Key="DangerBrush" Color="#FF3B202B" />
+                    <SolidColorBrush x:Key="DangerInkBrush" Color="#FFFDA4AF" />
+                    <SolidColorBrush x:Key="InputBrush" Color="#FF111827" />
+                </ResourceDictionary>
+            </ResourceDictionary.ThemeDictionaries>
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>
