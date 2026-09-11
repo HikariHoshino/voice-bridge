@@ -16,7 +16,6 @@
       <Grid>
         <StackPanel VerticalAlignment="Center"><TextBlock x:Name="ConnectionTitle" Text="手机连接" Style="{StaticResource CardTitleStyle}"/><TextBlock x:Name="ConnectionSubtitle" Text="已配对手机可直接打开收藏页面" Style="{StaticResource MutedStyle}" Margin="0,2,0,0"/></StackPanel>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center" Spacing="8">
-          <Button x:Name="PauseButton" Width="40" Height="40" CornerRadius="20" Padding="0" AutomationProperties.Name="暂停手机输入电脑" ToolTipService.ToolTip="暂停手机输入电脑"/>
           <Button x:Name="QrButton" Width="40" Height="40" CornerRadius="20" Padding="0" AutomationProperties.Name="手机配对二维码" ToolTipService.ToolTip="手机配对二维码"/>
         </StackPanel>
       </Grid>

@@ -2,6 +2,8 @@
 
 本目录为独立分支中的 C++/WinRT + WinUI 3 + Composition 实现。原 Python 文件、手机页面和图标保持基线字节，恢复点见源码中的 BASELINE.md。实际验收范围见 VALIDATION.md。
 
+当前版本在用户确认可用的 `checkpoint/native-usable-20260911` 检查点上更换自绘标题栏，并移除暂停输入按钮。主窗口、设置、配对和关闭询问使用相同的深浅色标题栏；关闭主窗口仍遵循原有“询问 / 托盘 / 退出”设置。检查点位置和哈希见 CHECKPOINTS.md。
+
 ## 使用交付包
 
 将整个文件夹放到固定位置，双击 `VoiceBridge.exe`。不需要 Python 或 Visual Studio，也不需要单独安装 Windows App SDK。请保留 EXE 同目录的 DLL、资源和子目录。

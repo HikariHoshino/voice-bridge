@@ -24,6 +24,7 @@ inline void invoke_button(Button const& button) {
     auto peer = Automation::Peers::ButtonAutomationPeer(button);
     peer.GetPattern(Automation::Peers::PatternInterface::Invoke).as<Automation::Provider::IInvokeProvider>().Invoke();
 }
+inline Button caption_button(Window const& window, wchar_t const* name) { return window.Content().as<Grid>().FindName(name).as<Button>(); }
 inline Button find_button(DependencyObject const& parent, std::wstring const& caption) {
     if (auto button = parent.try_as<Button>()) {
         if (auto text = button.Content().try_as<IPropertyValue>(); text && text.Type() == PropertyType::String && text.GetString() == caption) return button;
@@ -63,6 +64,20 @@ inline fire_and_forget App::run_ui_tests() {
         check(IsWindowVisible(window_handle(window)) && root.ActualWidth() >= 520 && root.ActualHeight() >= 330, "actual WinUI window is visible and laid out");
         check(find<Button>(L"QrButton").IsEnabled() && find<TextBlock>(L"StatusText").Text() == L"等待手机连接", "window is ready only after its real native service starts");
         check(find<Grid>(L"TransferContent").Visibility() == Visibility::Collapsed, "startup preserves collapsed transfer panel");
+        check(std::abs(root.ActualHeight() - collapsed_height) < 2 && std::abs(find<Border>(L"TransferCard").ActualHeight() - find<Border>(L"ConnectionCard").ActualHeight()) < 2, "custom title bar preserves the checkpoint content height and equal collapsed cards");
+        check(!root.FindName(L"PauseButton") && bridge->accepting, "removed pause control leaves phone receiving enabled");
+        auto presenter = window.AppWindow().Presenter().as<windowing::OverlappedPresenter>();
+        check(!presenter.HasTitleBar() && caption_button(window, L"CaptionClose").ActualWidth() == 30, "title bar and caption buttons are drawn by Voice Bridge instead of the system");
+        auto regions = Microsoft::UI::Input::InputNonClientPointerSource::GetForWindowId(window.AppWindow().Id()).GetRegionRects(Microsoft::UI::Input::NonClientRegionKind::Caption);
+        check(regions.size() == 1 && regions[0].Height == caption_height(window_handle(window)) && regions[0].Width < window.AppWindow().ClientSize().Width - 100, "caption drag region is DPI-scaled and excludes clickable window controls");
+        invoke_button(caption_button(window, L"CaptionMinimize")); co_await resume_after(150ms); co_await ui;
+        check(IsIconic(window_handle(window)), "custom minimize button minimizes the real window");
+        restore(); co_await resume_after(400ms); co_await ui;
+        for (int attempt = 0; attempt < 20 && (IsIconic(window_handle(window)) || content_client_rect(window).bottom <= 0); ++attempt) {
+            restore(); co_await resume_after(100ms); co_await ui;
+        }
+        if (IsIconic(window_handle(window)) || content_client_rect(window).bottom <= 0) throw std::runtime_error("Window did not finish restoring; cannot verify caption interactions");
+        check(std::abs(root.ActualHeight() - collapsed_height) < 2, "minimize and restore cannot change the checkpoint content height");
         window_metrics = vb::json{{"dpi", ui_dpi_scale * 96}, {"window_client", {root.ActualWidth(), root.ActualHeight()}},
             {"connection_height", find<Border>(L"ConnectionCard").ActualHeight()}, {"transfer_height", find<Border>(L"TransferCard").ActualHeight()},
             {"status_height", find<Border>(L"StatusCard").ActualHeight()}};
@@ -72,6 +87,11 @@ inline fire_and_forget App::run_ui_tests() {
         root.UpdateLayout();
         auto input = find<TextBox>(L"DesktopText");
         check(expanded && !animating && input.ActualHeight() >= 80 && find<Grid>(L"TransferContent").IsHitTestVisible(), "expand animation ends with an editable input and enabled hit testing");
+        auto before_maximize = root.ActualHeight();
+        invoke_button(caption_button(window, L"CaptionMaximize")); co_await resume_after(200ms); co_await ui;
+        check(IsZoomed(window_handle(window)) && window.Content().as<Grid>().FindName(L"RestoreGlyph").as<UIElement>().Visibility() == Visibility::Visible, "custom maximize button maximizes and shows the restore glyph");
+        invoke_button(caption_button(window, L"CaptionMaximize")); co_await resume_after(200ms); co_await ui;
+        check(!IsZoomed(window_handle(window)) && std::abs(root.ActualHeight() - before_maximize) < 2, "custom restore button returns to the original input panel size");
         auto footer = find<Border>(L"StatusCard"); auto footer_position = footer.TransformToVisual(root).TransformPoint({0, 0});
         check(footer_position.Y + footer.ActualHeight() <= root.ActualHeight(), "expanded footer stays inside the visible client area");
         input.Text(L"原生界面验收  😀𠮷 **Markdown**");
@@ -81,11 +101,6 @@ inline fire_and_forget App::run_ui_tests() {
         check(input.Text().empty() && response["body"]["messages"].size() == 1 && response["body"]["messages"][0]["text"] == "原生界面验收  😀𠮷 **Markdown**", "send button delivers its real text through the phone HTTP protocol and clears only after queueing");
         auto session = response["body"]["session"];
         co_await http("/ack", vb::json{{"session", session}, {"through", response["body"]["messages"][0]["id"]}});
-        invoke_button(find<Button>(L"PauseButton")); co_await resume_after(100ms); co_await ui;
-        response = vb::json::parse(to_string(co_await http("/send", vb::json{{"text", "must not inject"}})));
-        check(response["status"] == 423, "pause toolbar action blocks native HTTP injection");
-        invoke_button(find<Button>(L"PauseButton")); co_await resume_after(100ms); co_await ui;
-        check(bridge->accepting, "resume toolbar action restores receiving");
         // Let the launcher/approval surface finish activation before taking test focus.
         co_await resume_after(1500ms); co_await ui;
         auto focus_test_input = [&] {
@@ -141,11 +156,14 @@ inline fire_and_forget App::run_ui_tests() {
         auto resized_height = root.ActualHeight();
         invoke_button(find<Button>(L"TransferButton")); co_await resume_after(350ms); co_await ui;
         check(!expanded && !animating && std::abs(root.ActualHeight() - collapsed_height) < 2, "collapse restores its previous window height");
+        checks.back()["actual"] = root.ActualHeight(); checks.back()["expected"] = collapsed_height; checks.back()["client"] = content_client_rect(window).bottom;
         co_await save_preview(window.Content().as<FrameworkElement>(), ui_test_report.parent_path() / "dark-closed.png");
         invoke_button(find<Button>(L"TransferButton")); co_await resume_after(350ms); co_await ui;
         check(std::abs(root.ActualHeight() - resized_height) < 2, "reopening preserves user-resized input height");
+        checks.back()["actual"] = root.ActualHeight(); checks.back()["expected"] = resized_height; checks.back()["client"] = content_client_rect(window).bottom;
         invoke_button(find<Button>(L"SettingsButton")); co_await resume_after(250ms); co_await ui;
         check(settings_window && setting_switches.size() == 5 && IsWindowVisible(window_handle(settings_window)), "settings window opens with all five original switches");
+        check(!settings_window.AppWindow().Presenter().as<windowing::OverlappedPresenter>().HasTitleBar(), "settings uses the same custom window frame");
         auto settings_root = settings_window.Content().as<FrameworkElement>();
         window_metrics["settings_client"] = {settings_root.ActualWidth() * ui_dpi_scale, settings_root.ActualHeight() * ui_dpi_scale};
         window_metrics["font_lines"] = {font_line(9), font_line(10), font_line(11, true), font_line(22, true)};
@@ -170,20 +188,23 @@ inline fire_and_forget App::run_ui_tests() {
         auto rotate_bounds = find_button(qr_window.Content(), L"重新配对").TransformToVisual(pairing_root).TransformPoint({0, 42});
         check(rotate_bounds.Y <= pairing_root.ActualHeight(), "pairing actions stay inside the non-resizable window");
         co_await save_preview(qr_window.Content().as<FrameworkElement>(), ui_test_report.parent_path() / "pairing-dark.png");
-        qr_window.Close();
-        request_close(); co_await resume_after(200ms); co_await ui;
+        check(caption_button(qr_window, L"CaptionMaximize").Visibility() == Visibility::Collapsed, "fixed-size pairing window omits an unusable maximize action");
+        invoke_button(caption_button(qr_window, L"CaptionClose")); co_await resume_after(150ms); co_await ui;
+        check(!qr_window && IsWindowVisible(window_handle(window)), "pairing caption close dismisses only the pairing window");
+        invoke_button(caption_button(window, L"CaptionClose")); co_await resume_after(200ms); co_await ui;
         check(!IsWindowVisible(window_handle(window)), "configured close-to-tray hides the window and keeps its server running");
         response = vb::json::parse(to_string(co_await http("/settings")));
         check(response["status"] == 200, "phone service remains available while minimized to tray");
         SetEvent(activation_event); co_await resume_after(300ms); co_await ui;
         check(IsWindowVisible(window_handle(window)) && WaitForSingleObject(activation_ack, 0) == WAIT_OBJECT_0, "single-instance activation restores and acknowledges the existing window");
-        config->update({{"close_action", "ask"}}); request_close(); co_await resume_after(200ms); co_await ui;
+        config->update({{"close_action", "ask"}}); invoke_button(caption_button(window, L"CaptionClose")); co_await resume_after(200ms); co_await ui;
         check(close_window && find_button(close_window.Content(), L"最小化到托盘") && find_button(close_window.Content(), L"直接关闭"), "close prompt offers both original actions");
         auto close_root = close_window.Content().as<FrameworkElement>();
         window_metrics["close_client"] = {close_root.ActualWidth() * ui_dpi_scale, close_root.ActualHeight() * ui_dpi_scale};
         check(!IsWindowEnabled(window_handle(window)), "close question is modal like the original and prevents conflicting main-window actions");
         co_await save_preview(close_window.Content().as<FrameworkElement>(), ui_test_report.parent_path() / "close-dark.png");
-        close_window.Close();
+        invoke_button(caption_button(close_window, L"CaptionClose")); co_await resume_after(100ms); co_await ui;
+        check(!close_window && IsWindowEnabled(window_handle(window)), "custom dialog close cancels the question and re-enables the main window");
     } catch (hresult_error const& error) { checks.push_back({{"test", "UI runtime exception"}, {"passed", false}, {"error", to_string(error.message())}}); }
       catch (std::exception const& error) { checks.push_back({{"test", "UI integration exception"}, {"passed", false}, {"error", error.what()}}); }
     output(); exit_app();

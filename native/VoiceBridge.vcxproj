@@ -57,6 +57,7 @@
   <ItemGroup><ResourceCompile Include="VoiceBridge.rc" /></ItemGroup>
   <ItemGroup>
     <None Include="Main.xaml"><CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory></None>
+    <None Include="WindowFrame.xaml"><CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory></None>
     <None Include="Theme.xaml"><CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory></None>
     <None Include="..\mobile.html"><Link>mobile.html</Link><CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory></None>
     <None Include="..\assets\voice-bridge.png"><Link>assets\voice-bridge.png</Link><CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory></None>

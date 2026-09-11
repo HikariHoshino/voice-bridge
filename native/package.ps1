@@ -6,7 +6,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $source 'VoiceBridge.exe'))) { throw
 if (Test-Path -LiteralPath $Destination) { throw 'Destination already exists; choose a new directory to preserve it.' }
 New-Item -ItemType Directory -Path $Destination | Out-Null
 Get-ChildItem -LiteralPath $source -Force | Copy-Item -Destination $Destination -Recurse
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'README.md'), (Join-Path $PSScriptRoot 'VALIDATION.md'), (Join-Path $PSScriptRoot 'THIRD_PARTY.md') -Destination $Destination
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'README.md'), (Join-Path $PSScriptRoot 'VALIDATION.md'), (Join-Path $PSScriptRoot 'THIRD_PARTY.md'), (Join-Path $PSScriptRoot 'CHECKPOINTS.md') -Destination $Destination
 $licenses = Join-Path $Destination 'licenses'
 New-Item -ItemType Directory -Path $licenses | Out-Null
 Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot 'vendor') -Filter '*LICENSE*' -File | Copy-Item -Destination $licenses

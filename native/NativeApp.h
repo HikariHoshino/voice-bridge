@@ -15,6 +15,7 @@
 #include <winrt/Microsoft.UI.Dispatching.h>
 #include <winrt/Microsoft.UI.Composition.h>
 #include <winrt/Microsoft.UI.Windowing.h>
+#include <winrt/Microsoft.UI.Input.h>
 #include <winrt/Microsoft.UI.Xaml.h>
 #include <winrt/Microsoft.UI.Xaml.Controls.h>
 #include <winrt/Microsoft.UI.Xaml.Controls.Primitives.h>
@@ -85,8 +86,16 @@ inline Grid pixel_host(FrameworkElement const& content, double width, double hei
 inline SolidColorBrush brush(uint32_t rgb) { return SolidColorBrush(Windows::UI::Color{255, BYTE(rgb >> 16), BYTE(rgb >> 8), BYTE(rgb)}); }
 inline UIElement xaml(std::wstring const& source) { return Markup::XamlReader::Load(source).as<UIElement>(); }
 inline void accessible_name(DependencyObject const& object, wchar_t const* label) { Automation::AutomationProperties::SetName(object, label); }
+inline int caption_height(HWND hwnd) { return GetPropW(hwnd, L"VoiceBridge.CustomCaption") ? MulDiv(36, GetDpiForWindow(hwnd), 96) : 0; }
+inline RECT content_client_rect(Window const& window) {
+    RECT rect{}; auto hwnd = window_handle(window); GetClientRect(hwnd, &rect); rect.bottom -= caption_height(hwnd); return rect;
+}
 inline void client_size(Window const& window, double width, double height) {
-    window.AppWindow().ResizeClient({int32_t(std::lround(width)), int32_t(std::lround(height))});
+    auto hwnd = window_handle(window); RECT outer{}, client{}; GetWindowRect(hwnd, &outer); GetClientRect(hwnd, &client);
+    // ResizeClient counts the hidden system caption; use the actual remaining border.
+    SetWindowPos(hwnd, nullptr, 0, 0, int(std::lround(width)) + outer.right - outer.left - client.right,
+        int(std::lround(height)) + caption_height(hwnd) + outer.bottom - outer.top - client.bottom,
+        SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
 }
 inline void center(Window const& window, HWND owner = nullptr) {
     auto hwnd = window_handle(window); RECT rect{}, anchor{}; GetWindowRect(hwnd, &rect);
@@ -99,7 +108,6 @@ inline std::map<std::wstring, std::wstring> const icon_paths{
     {L"moon", L"M16 3 A8 8 0 1 0 21 15 A8 8 0 0 1 16 3"},
     {L"sun", L"M12 8 A4 4 0 1 0 12 16 A4 4 0 1 0 12 8 M12 2 L12 4 M12 20 L12 22 M2 12 L4 12 M20 12 L22 12 M5 5 L6.5 6.5 M17.5 17.5 L19 19 M5 19 L6.5 17.5 M17.5 6.5 L19 5"},
     {L"settings", L"M12 9 A3 3 0 1 0 12 15 A3 3 0 1 0 12 9 M12 5 A7 7 0 1 0 12 19 A7 7 0 1 0 12 5 M12 3 L12 5.52 M3 12 L5.52 12 M18.48 12 L21 12 M12 18.48 L12 21"},
-    {L"pause", L"M8 6 L8 18 M16 6 L16 18"}, {L"play", L"M7 5 L19 12 L7 19 Z"},
     {L"qr", L"M4 4 L10 4 L10 10 L4 10 Z M14 4 L20 4 L20 10 L14 10 Z M4 14 L10 14 L10 20 L4 20 Z M15 15 L20 15 L20 20 M15 20 L17 20"},
     {L"down", L"M6 9 L12 15 L18 9"}, {L"up", L"M6 15 L12 9 L18 15"},
     {L"copy", L"M5 5 L16 5 L16 16 L5 16 Z M9 9 L20 9 L20 20 L9 20 Z"},
@@ -134,6 +142,7 @@ struct App : ApplicationT<App, Markup::IXamlMetadataProvider> {
     bool closing = false, expanded = false, animating = false, dark = false;
     double collapsed_height = 360, expanded_height = 540;
     double initial_width = 580;
+    LONG window_border_width{}, window_border_height{};
     std::chrono::steady_clock::time_point animation_start;
     double animation_from{}, animation_to{};
     event_token rendering{};
@@ -183,14 +192,12 @@ struct App : ApplicationT<App, Markup::IXamlMetadataProvider> {
         if (!target) return;
         auto hwnd = window_handle(target); BOOL enabled = dark;
         DwmSetWindowAttribute(hwnd, 20, &enabled, sizeof(enabled));
-        COLORREF color = dark ? RGB(10, 10, 10) : RGB(243, 246, 251);
-        DwmSetWindowAttribute(hwnd, 35, &color, sizeof(color));
         SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(app_icon));
         SendMessageW(hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(app_icon));
         target.Content().as<FrameworkElement>().RequestedTheme(dark ? ElementTheme::Dark : ElementTheme::Light);
     }
     void OnLaunched(LaunchActivatedEventArgs const&);
-    void update_pause();
+    void attach_frame(Window const& target, FrameworkElement const& content, double width, double height, bool main, bool resizable = true);
     void apply_settings();
     void change_theme();
     void send();
@@ -204,8 +211,8 @@ struct App : ApplicationT<App, Markup::IXamlMetadataProvider> {
     void exit_app();
     void minimize_to_tray();
     void restore() { ShowWindow(window_handle(window), SW_RESTORE); window.Activate(); SetForegroundWindow(window_handle(window)); }
-    Window secondary(wchar_t const* title, FrameworkElement const& content, double width, double height) {
-        auto target = Window(); target.Title(title); target.Content(pixel_host(content, width, height));
+    Window secondary(wchar_t const* title, FrameworkElement const& content, double width, double height, bool resizable = true) {
+        auto target = Window(); target.Title(title); attach_frame(target, content, width, height, false, resizable);
         SetWindowLongPtrW(window_handle(target), GWLP_HWNDPARENT, reinterpret_cast<LONG_PTR>(window_handle(window)));
         chrome(target); client_size(target, width, height); center(target, window_handle(window)); target.Activate(); ShowWindow(window_handle(target), SW_SHOW); return target;
     }
@@ -224,6 +231,48 @@ struct App : ApplicationT<App, Markup::IXamlMetadataProvider> {
     Border card(UIElement const& child) { Border result; result.CornerRadius(CornerRadius(22)); result.Padding(Thickness(27)); bind_color(result, Border::BackgroundProperty(), L"CardBrush"); result.Child(child); return result; }
     static LRESULT CALLBACK window_proc(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
 };
+
+inline void App::attach_frame(Window const& target, FrameworkElement const& content, double width, double height, bool main, bool resizable) {
+    auto frame = xaml(vb::wide(vb::read_file(vb::executable_dir() / "WindowFrame.xaml"))).as<Grid>();
+    frame.FindName(L"CaptionTitle").as<TextBlock>().Text(main ? L"声桥" : target.Title());
+    frame.FindName(L"WindowBody").as<Grid>().Children().Append(pixel_host(content, width, height));
+    target.Content(frame);
+    auto presenter = target.AppWindow().Presenter().as<windowing::OverlappedPresenter>();
+    presenter.SetBorderAndTitleBar(true, false); presenter.IsResizable(resizable); presenter.IsMaximizable(resizable);
+    check_bool(SetPropW(window_handle(target), L"VoiceBridge.CustomCaption", reinterpret_cast<HANDLE>(1)));
+    auto weak_window = make_weak(target); auto weak_frame = make_weak(frame);
+    auto minimize = frame.FindName(L"CaptionMinimize").as<Button>();
+    auto maximize = frame.FindName(L"CaptionMaximize").as<Button>();
+    minimize.Visibility(main ? Visibility::Visible : Visibility::Collapsed);
+    maximize.Visibility(resizable ? Visibility::Visible : Visibility::Collapsed);
+    minimize.Click([weak_window](auto&&, auto&&) { if (auto w = weak_window.get()) w.AppWindow().Presenter().as<windowing::OverlappedPresenter>().Minimize(); });
+    maximize.Click([weak_window](auto&&, auto&&) {
+        if (auto w = weak_window.get()) {
+            auto p = w.AppWindow().Presenter().as<windowing::OverlappedPresenter>();
+            if (p.State() == windowing::OverlappedPresenterState::Maximized) p.Restore(); else p.Maximize();
+        }
+    });
+    frame.FindName(L"CaptionClose").as<Button>().Click([this, weak_window, main](auto&&, auto&&) {
+        safe([&] { if (main) request_close(); else if (auto w = weak_window.get()) w.Close(); });
+    });
+    auto update_regions = [weak_window, weak_frame, main, resizable] {
+        auto w = weak_window.get(); auto f = weak_frame.get(); if (!w || !f || !f.XamlRoot()) return;
+        auto scale = f.XamlRoot().RasterizationScale();
+        const auto actions_width = 6 + 30 + (main ? 34 : 0) + (resizable ? 34 : 0);
+        auto source = Microsoft::UI::Input::InputNonClientPointerSource::GetForWindowId(w.AppWindow().Id());
+        source.SetRegionRects(Microsoft::UI::Input::NonClientRegionKind::Caption,
+            {Windows::Graphics::RectInt32{0, 0, std::max(0, int32_t(std::floor((f.ActualWidth() - actions_width) * scale))), int32_t(std::lround(36 * scale))}});
+        auto maximized = w.AppWindow().Presenter().as<windowing::OverlappedPresenter>().State() == windowing::OverlappedPresenterState::Maximized;
+        f.FindName(L"MaximizeGlyph").as<UIElement>().Visibility(maximized ? Visibility::Collapsed : Visibility::Visible);
+        f.FindName(L"RestoreGlyph").as<UIElement>().Visibility(maximized ? Visibility::Visible : Visibility::Collapsed);
+        auto button = f.FindName(L"CaptionMaximize").as<Button>();
+        accessible_name(button, maximized ? L"还原" : L"最大化"); ToolTipService::SetToolTip(button, box_value(maximized ? L"还原" : L"最大化"));
+    };
+    frame.Loaded([update_regions](auto&&, auto&&) { update_regions(); });
+    frame.SizeChanged([update_regions](auto&&, auto&&) { update_regions(); });
+    target.AppWindow().Changed([update_regions](auto&&, auto&&) { update_regions(); });
+    target.Closed([hwnd = window_handle(target)](auto&&, auto&&) { RemovePropW(hwnd, L"VoiceBridge.CustomCaption"); });
+}
 
 inline void App::OnLaunched(LaunchActivatedEventArgs const&) try {
     startup_stage = L"controls resources";
@@ -255,15 +304,16 @@ inline void App::OnLaunched(LaunchActivatedEventArgs const&) try {
     rows.GetAt(0).Height({header_height + 14, GridUnitType::Pixel}); rows.GetAt(1).Height({card_height + 12, GridUnitType::Pixel}); rows.GetAt(3).Height({status_height, GridUnitType::Pixel});
     find<Grid>(L"TransferLayout").RowDefinitions().GetAt(0).Height({card_height - 54, GridUnitType::Pixel});
     find<Border>(L"TransferCard").MinHeight(card_height);
-    window.Content(pixel_host(root, initial_width, collapsed_height));
+    attach_frame(window, root, initial_width, collapsed_height, true);
+    { RECT outer{}, client{}; auto hwnd = window_handle(window); GetWindowRect(hwnd, &outer); GetClientRect(hwnd, &client);
+      window_border_width = outer.right - outer.left - client.right; window_border_height = outer.bottom - outer.top - client.bottom; }
     startup_stage = L"logo image";
     find<Image>(L"Logo").Source(Imaging::BitmapImage(Uri(L"file:///" + (vb::executable_dir() / L"assets/voice-bridge.png").generic_wstring())));
     startup_stage = L"button icons";
-    icon(find<Button>(L"SettingsButton"), L"settings"); icon(find<Button>(L"PauseButton"), L"pause");
+    icon(find<Button>(L"SettingsButton"), L"settings");
     icon(find<Button>(L"QrButton"), L"qr"); icon(find<Button>(L"TransferButton"), L"down");
     find<Button>(L"SettingsButton").Click([this](auto&&, auto&&) { safe([&] { open_settings(); }); });
     find<Button>(L"ThemeButton").Click([this](auto&&, auto&&) { safe([&] { change_theme(); }); });
-    find<Button>(L"PauseButton").Click([this](auto&&, auto&&) { if (bridge) { bridge->accepting = !bridge->accepting; update_pause(); status(bridge->accepting ? "已恢复接收手机文字" : "已暂停接收手机文字"); } });
     find<Button>(L"QrButton").Click([this](auto&&, auto&&) { if (bridge) safe([&] { open_qr(); }); });
     find<Button>(L"TransferButton").Click([this](auto&&, auto&&) { toggle_transfer(); });
     find<Button>(L"SendButton").Click([this](auto&&, auto&&) { safe([&] { send(); }); });
@@ -285,7 +335,7 @@ inline void App::OnLaunched(LaunchActivatedEventArgs const&) try {
     client_size(window, initial_width, collapsed_height); center(window);
     startup_stage = L"activate window";
     window.Activate(); ShowWindow(window_handle(window), SW_SHOW); initialize_tray(); status("正在连接本机服务…");
-    for (auto id : {L"QrButton", L"PauseButton", L"SendButton"}) find<Button>(id).IsEnabled(false);
+    for (auto id : {L"QrButton", L"SendButton"}) find<Button>(id).IsEnabled(false);
     poll = dispatcher.CreateTimer(); poll.Interval(100ms);
     poll.Tick([this](auto&&, auto&&) {
         if (activation_event && WaitForSingleObject(activation_event, 0) == WAIT_OBJECT_0) { ResetEvent(activation_event); restore(); if (activation_ack) SetEvent(activation_ack); }
@@ -300,7 +350,7 @@ inline void App::OnLaunched(LaunchActivatedEventArgs const&) try {
             else { if (override_port) (*next)->port = override_port; (*next)->start(); }
             dispatcher.TryEnqueue([this, next] {
                 if (closing) return; bridge = std::move(*next);
-                for (auto id : {L"QrButton", L"PauseButton", L"SendButton"}) find<Button>(id).IsEnabled(true);
+                for (auto id : {L"QrButton", L"SendButton"}) find<Button>(id).IsEnabled(true);
                 status(bridge->displayed_ip != bridge->bound_ip ? "已保存地址当前不可用，请打开二维码并点击“刷新地址”" : "等待手机连接");
             });
         } catch (std::exception const& error) { auto message = std::string(error.what()); dispatcher.TryEnqueue([this, message] { status("启动失败：" + message); }); }
@@ -309,12 +359,6 @@ inline void App::OnLaunched(LaunchActivatedEventArgs const&) try {
     if (!ui_test_report.empty()) run_ui_tests();
 } catch (hresult_error const& error) { auto message = hstring(startup_stage) + L": " + error.message(); log_error(message); if (!isolated) MessageBoxW(nullptr, message.c_str(), L"声桥启动失败", MB_OK | MB_ICONERROR); Exit(); }
   catch (std::exception const& error) { log_error(to_hstring(error.what())); MessageBoxW(nullptr, to_hstring(error.what()).c_str(), L"声桥启动失败", MB_OK | MB_ICONERROR); Exit(); }
-inline void App::update_pause() {
-    auto b = find<Button>(L"PauseButton");
-    b.Background(bridge->accepting ? palette(L"SecondaryBrush") : brush(0x2563EB));
-    b.Foreground(bridge->accepting ? palette(L"InkBrush") : brush(0xffffff)); icon(b, bridge->accepting ? L"pause" : L"play");
-    accessible_name(b, bridge->accepting ? L"暂停手机输入电脑" : L"恢复手机输入电脑");
-}
 inline void App::apply_settings() {
     auto s = config->settings();
     find<TextBlock>(L"ShortcutHint").Text(s["send_mode"] == "ctrl_enter" ? L"Ctrl + Enter 发送 · Enter 换行" : L"Enter 发送 · Ctrl + Enter 换行");
@@ -334,7 +378,6 @@ inline void App::change_theme() {
     });
     icon(find<Button>(L"ThemeButton"), dark ? L"sun" : L"moon"); icon(find<Button>(L"SettingsButton"), L"settings");
     icon(find<Button>(L"QrButton"), L"qr"); icon(find<Button>(L"TransferButton"), expanded ? L"up" : L"down");
-    if (bridge) update_pause();
     auto visual = ElementCompositionPreview::GetElementVisual(root);
     auto fade = visual.Compositor().CreateScalarKeyFrameAnimation(); fade.InsertKeyFrame(0, .78f); fade.InsertKeyFrame(1, 1.f); fade.Duration(224ms); visual.StartAnimation(L"Opacity", fade);
 }
@@ -345,8 +388,9 @@ inline void App::send() {
     bridge->queue(text); box.Text(L""); status("已发送 " + std::to_string(vb::character_count(text)) + " 个字符到手机");
 }
 inline void App::toggle_transfer() {
-    if (animating || closing) return;
-    RECT rect{}; GetClientRect(window_handle(window), &rect);
+    if (animating || closing || IsIconic(window_handle(window))) return;
+    auto rect = content_client_rect(window);
+    if (rect.bottom <= 0 || rect.right <= 0) return;
     animation_from = rect.bottom;
     if (!expanded) { collapsed_height = animation_from; animation_to = expanded_height = std::max(expanded_height, collapsed_height + 180); }
     else { expanded_height = animation_from; animation_to = collapsed_height; }

@@ -87,8 +87,7 @@ inline void App::open_qr() {
     Grid background; bind_color(background, Panel::BackgroundProperty(), L"RootBrush"); background.Children().Append(content);
     const auto pairing_width = std::max(480., std::round(420 * ui_dpi_scale));
     const auto pairing_height = 44 + font_line(22, true) + 4 + font_line(10) + 4 + 14 + 240 + font_line(9) + 6 + 20 + 42;
-    draw_qr(); qr_window = secondary(L"手机配对", background, pairing_width, std::max(450., pairing_height));
-    qr_window.AppWindow().Presenter().as<windowing::OverlappedPresenter>().IsResizable(false);
+    draw_qr(); qr_window = secondary(L"手机配对", background, pairing_width, std::max(450., pairing_height), false);
     select_button(find<Button>(L"QrButton"), true); icon(find<Button>(L"QrButton"), L"qr");
     qr_window.Closed([this](auto&&, auto&&) { qr_window = nullptr; qr_canvas = nullptr; qr_address = nullptr; select_button(find<Button>(L"QrButton"), false); icon(find<Button>(L"QrButton"), L"qr"); });
 }
@@ -106,8 +105,7 @@ inline void App::request_close() {
     content.Children().Append(actions); Grid background; bind_color(background, Panel::BackgroundProperty(), L"RootBrush"); background.Children().Append(content);
     content.Measure({std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity()});
     const auto close_height = 48 + font_line(22, true) + 4 + font_line(10) + 4 + 21 + 42;
-    close_window = secondary(L"关闭声桥", background, std::max<double>(450., content.DesiredSize().Width), std::max(180., close_height));
-    close_window.AppWindow().Presenter().as<windowing::OverlappedPresenter>().IsResizable(false);
+    close_window = secondary(L"关闭声桥", background, std::max<double>(450., content.DesiredSize().Width), std::max(180., close_height), false);
     EnableWindow(window_handle(window), FALSE);
     close_window.Closed([this](auto&&, auto&&) { close_window = nullptr; EnableWindow(window_handle(window), TRUE); });
     actions.Children().GetAt(0).as<Button>().Focus(FocusState::Programmatic);
@@ -143,7 +141,9 @@ inline LRESULT CALLBACK App::window_proc(HWND hwnd, UINT message, WPARAM wparam,
         auto limits = reinterpret_cast<MINMAXINFO*>(lparam);
         RECT frame{0, 0, 520, LONG(self->expanded ? self->collapsed_height + 180 : self->collapsed_height)};
         if (self->animating) frame.bottom = 330;
-        AdjustWindowRectExForDpi(&frame, static_cast<DWORD>(GetWindowLongPtrW(hwnd, GWL_STYLE)), FALSE, static_cast<DWORD>(GetWindowLongPtrW(hwnd, GWL_EXSTYLE)), GetDpiForWindow(hwnd));
+        frame.bottom += caption_height(hwnd);
+        frame.right += self->window_border_width;
+        frame.bottom += self->window_border_height;
         limits->ptMinTrackSize = {frame.right - frame.left, frame.bottom - frame.top};
         if (!self->expanded && !self->animating) limits->ptMaxTrackSize.y = limits->ptMinTrackSize.y;
         return 0;
