@@ -16,6 +16,8 @@ env/
 /native/VoiceBridge/obj/
 /native/VoiceBridge/XamlMetaDataProvider.cpp
 /native/VoiceBridge/XamlMetaDataProvider.idl
+/native/VoiceBridge.Tests/build/
+/native/VoiceBridge.Tests/obj/
 
 /ui-check.png
 /final-ui-check.png

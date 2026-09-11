@@ -17,7 +17,7 @@ $arguments = @(
     $solution,
     "/p:Configuration=$Configuration",
     '/p:Platform=x64',
-    '/m',
+    '/m:1',
     '/v:minimal'
 )
 if ($Restore) {
@@ -50,5 +50,5 @@ $stdout = $process.StandardOutput.ReadToEnd()
 $stderr = $process.StandardError.ReadToEnd()
 $process.WaitForExit()
 if ($stdout) { Write-Output $stdout.TrimEnd() }
-if ($stderr) { Write-Error $stderr.TrimEnd() }
+if ($stderr) { [Console]::Error.WriteLine($stderr.TrimEnd()) }
 exit $process.ExitCode

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Core/SettingsStore.h"
 #include "MainWindow.g.h"
 
 namespace winrt::VoiceBridge::implementation
@@ -18,6 +19,8 @@ namespace winrt::VoiceBridge::implementation
     private:
         bool m_dark{};
         bool m_transferExpanded{};
+        ::VoiceBridge::Core::SettingsStore m_settingsStore;
+        ::VoiceBridge::Core::Settings m_settings;
 
         void ApplyTheme();
         void ConfigureWindow();

@@ -18,6 +18,8 @@ namespace winrt::VoiceBridge::implementation
     MainWindow::MainWindow()
     {
         InitializeComponent();
+        m_settings = m_settingsStore.Load();
+        m_dark = m_settings.theme == L"dark";
         Title(L"声桥 · Windows 原生版");
         ConfigureWindow();
         ApplyTheme();
@@ -48,6 +50,8 @@ namespace winrt::VoiceBridge::implementation
     void MainWindow::ThemeButton_Click(IInspectable const&, RoutedEventArgs const&)
     {
         m_dark = !m_dark;
+        m_settings.theme = m_dark ? L"dark" : L"light";
+        m_settingsStore.Save(m_settings);
         auto visual = ElementCompositionPreview::GetElementVisual(RootGrid());
         auto compositor = visual.Compositor();
         auto fade = compositor.CreateScalarKeyFrameAnimation();
