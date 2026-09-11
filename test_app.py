@@ -14,6 +14,7 @@ from urllib.request import Request, urlopen
 from app import (
     BridgeApp,
     BridgeServer,
+    RoundedCard,
     NoTextInputFocusError,
     THEMES,
     WEB_PAGE,
@@ -441,7 +442,262 @@ class NetworkRebindTests(unittest.TestCase):
         )
 
 
+class TransferAnimationTests(unittest.TestCase):
+    def setUp(self):
+        self.animation_time = 0.0
+        clock = patch("app.time.perf_counter", side_effect=lambda: self.animation_time)
+        clock.start()
+        self.addCleanup(clock.stop)
+
+    def make_application(self, expanded=False):
+        application = object.__new__(BridgeApp)
+        application.root = Mock()
+        application.root.winfo_width.return_value = 580
+        application.root.winfo_height.return_value = 620 if expanded else 400
+        application.transfer_shell = Mock()
+        application.transfer_shell.winfo_height.return_value = 320 if expanded else 100
+        application.transfer_shell.content.winfo_reqheight.return_value = 298
+        application.transfer_shell.inset = 11
+        application.transfer_content = Mock()
+        application.transfer_toggle_button = Mock()
+        application.main_frame = Mock()
+        application.main_frame.winfo_reqheight.return_value = 600 if expanded else 380
+        application.transfer_expanded = expanded
+        application.transfer_collapsed_height = 100
+        application.transfer_collapsed_window_height = 400
+        application.closing = False
+        application.window_max_size = (1920, 1080)
+        application.settings = {"show_desktop_to_phone": True}
+        return application
+
+    def finish_animation(self, application):
+        callbacks = 0
+        while application.transfer_animating:
+            self.animation_time += 0.001
+            callback = application.root.after_idle.call_args.args[0]
+            callback()
+            callbacks += 1
+            self.assertLess(callbacks, 300)
+
+    def test_expansion_adds_card_height_to_existing_window_in_smooth_steps(self):
+        application = self.make_application()
+        application.toggle_transfer_panel()
+        self.assertTrue(application.transfer_animating)
+        self.finish_animation(application)
+
+        heights = [
+            int(call.args[0].split("x")[1])
+            for call in application.root.geometry.call_args_list
+        ]
+        self.assertGreater(len(heights), 49)
+        self.assertAlmostEqual(self.animation_time, 0.2, places=3)
+        application.root.after.assert_not_called()
+        self.assertEqual(heights[-1], 620)
+        self.assertEqual(heights, sorted(heights))
+        card_heights = [
+            call.kwargs["height"]
+            for call in application.transfer_shell.configure.call_args_list[1:]
+        ]
+        self.assertTrue(all(280 <= window - card <= 300 for window, card in zip(heights, card_heights)))
+        self.assertEqual(card_heights[-1], 340)
+        application.root.resizable.assert_not_called()
+        application.root.withdraw.assert_not_called()
+        application.transfer_shell.pack_configure.assert_called_with(fill="both", expand=True)
+        application.root.maxsize.assert_called_with(1920, 1080)
+        self.assertEqual(application.root.update.call_count, len(heights))
+
+    def test_delayed_frame_catches_up_instead_of_extending_animation(self):
+        application = self.make_application()
+        application.toggle_transfer_panel()
+        self.animation_time = 0.25
+        callback = application.root.after_idle.call_args.args[0]
+        callback()
+        self.assertFalse(application.transfer_animating)
+        application.root.geometry.assert_called_with("580x620")
+        self.assertEqual(application.root.update.call_count, 2)
+
+    def test_rendering_time_is_budgeted_before_the_200ms_deadline(self):
+        application = self.make_application()
+        def render_frame():
+            self.animation_time += 0.016
+        application.root.update.side_effect = render_frame
+        application.toggle_transfer_panel()
+        self.animation_time = 0.184
+        application.root.after_idle.call_args.args[0]()
+        self.assertFalse(application.transfer_animating)
+        self.assertAlmostEqual(self.animation_time, 0.2)
+        application.root.geometry.assert_called_with("580x620")
+
+    def test_variable_render_cost_cannot_move_the_animation_backwards(self):
+        application = self.make_application()
+        application.toggle_transfer_panel()
+        self.animation_time = 0.05
+        application.root.update.side_effect = lambda: setattr(self, "animation_time", 0.08)
+        application.root.after_idle.call_args.args[0]()
+        application.root.update.side_effect = None
+        application.root.after_idle.call_args.args[0]()
+        application.root.after_idle.call_args.args[0]()
+        heights = [int(call.args[0].split("x")[1]) for call in application.root.geometry.call_args_list]
+        self.assertEqual(heights, sorted(heights))
+
+    def test_startup_preparation_is_included_in_animation_budget(self):
+        application = self.make_application()
+        application.transfer_content.update_idletasks.side_effect = lambda: setattr(self, "animation_time", 0.04)
+        application.toggle_transfer_panel()
+        self.finish_animation(application)
+        self.assertAlmostEqual(self.animation_time, 0.2, places=3)
+
+    def test_expansion_includes_unused_space_without_changing_window_target(self):
+        for spare in (0, 20, 60):
+            with self.subTest(spare=spare):
+                application = self.make_application()
+                application.main_frame.winfo_reqheight.return_value = 400 - spare
+                application.toggle_transfer_panel()
+                self.finish_animation(application)
+                application.root.geometry.assert_called_with("580x620")
+                application.transfer_shell.configure.assert_called_with(height=320 + spare)
+
+    def test_collapse_preserves_original_target_after_spare_space_is_absorbed(self):
+        application = self.make_application(expanded=True)
+        application.transfer_shell.winfo_height.return_value = 340
+        application.toggle_transfer_panel()
+        self.finish_animation(application)
+        application.root.geometry.assert_called_with("580x400")
+        application.transfer_shell.configure.assert_called_with(height=100)
+
+    def test_close_processed_during_redraw_does_not_touch_destroyed_window(self):
+        application = self.make_application()
+        application.root.update.side_effect = lambda: setattr(application, "closing", True)
+        application.toggle_transfer_panel()
+        self.assertFalse(application.transfer_animating)
+        application.root.after.assert_not_called()
+        application.root.after_idle.assert_not_called()
+
+    def test_ready_frame_is_not_throttled_by_refresh_rate(self):
+        application = self.make_application()
+        application.toggle_transfer_panel()
+        self.animation_time = 0.001
+        callback = application.root.after_idle.call_args.args[0]
+        callback()
+        self.assertEqual(application.root.geometry.call_count, 2)
+        application.root.after.assert_not_called()
+        self.finish_animation(application)
+
+    def test_easing_keeps_slow_ends_and_faster_middle_without_changing_duration(self):
+        application = self.make_application()
+        application.toggle_transfer_panel()
+        heights = []
+        for timestamp in (0.05, 0.1, 0.15, 0.2):
+            self.animation_time = timestamp
+            callback = application.root.after_idle.call_args.args[0]
+            callback()
+            heights.append(int(application.root.geometry.call_args.args[0].split("x")[1]))
+        self.assertEqual(heights, [434, 510, 586, 620])
+        self.assertFalse(application.transfer_animating)
+
+    def test_collapse_keeps_content_until_animation_finishes_and_ignores_double_click(self):
+        application = self.make_application(expanded=True)
+        application.toggle_transfer_panel()
+        application.transfer_content.pack_forget.assert_not_called()
+        application.toggle_transfer_panel()
+        self.assertFalse(application.transfer_expanded)
+        self.finish_animation(application)
+
+        application.transfer_content.pack_forget.assert_called_once_with()
+        application.root.geometry.assert_called_with("580x400")
+        application.transfer_shell.configure.assert_called_with(height=100)
+        application.transfer_shell.pack_configure.assert_called_with(fill="x", expand=False)
+
+    def test_collapsed_window_locks_only_height_without_changing_window_style(self):
+        application = self.make_application()
+        application._update_transfer_size_limits()
+
+        application.root.minsize.assert_called_once_with(520, 400)
+        application.root.maxsize.assert_called_once_with(1920, 400)
+        application.root.resizable.assert_not_called()
+
+    def test_collapse_after_manual_stretch_restores_original_window_height(self):
+        application = self.make_application(expanded=True)
+        application.root.winfo_height.return_value = 820
+        application.transfer_shell.winfo_height.return_value = 540
+        application.toggle_transfer_panel()
+        self.finish_animation(application)
+
+        application.root.geometry.assert_called_with("580x400")
+        application.transfer_shell.configure.assert_called_with(height=100)
+
+    def test_expanded_window_restores_vertical_resize_and_reserves_required_content(self):
+        application = self.make_application(expanded=True)
+        application._update_transfer_size_limits()
+
+        application.root.maxsize.assert_called_once_with(1920, 1080)
+        application.root.minsize.assert_called_once_with(520, 620)
+
+
+class RoundedBackgroundTests(unittest.TestCase):
+    def test_resize_reuses_background_without_a_delete_and_recreate_gap(self):
+        card = Mock()
+        card.background_items = []
+        card.radius = 12
+        card.fill_color = "#112233"
+        card.create_rectangle.side_effect = [1, 2]
+        card.create_arc.side_effect = [3, 4, 5, 6]
+        RoundedCard._draw_background(card, 580, 60)
+        RoundedCard._draw_background(card, 580, 90)
+        self.assertEqual(card.background_items, [1, 2, 3, 4, 5, 6])
+        self.assertEqual(card.create_rectangle.call_count, 2)
+        self.assertEqual(card.create_arc.call_count, 4)
+        card.delete.assert_not_called()
+        self.assertEqual(card.coords.call_count, 6)
+        card.itemconfigure.assert_called_with("rounded_background", fill="#112233")
+
+    def test_main_window_is_painted_before_becoming_visible(self):
+        application = object.__new__(BridgeApp)
+        application.root = Mock()
+        application.root.winfo_exists.return_value = True
+        application._center_window = Mock()
+        application._apply_window_chrome = Mock()
+        painted = []
+        application.root.update.side_effect = lambda: painted.append(True)
+        def change_alpha(option, value):
+            if value == 1.0:
+                self.assertEqual(painted, [True])
+        application.root.attributes.side_effect = change_alpha
+        application._show_centered_window(application.root)
+        application.root.update.assert_called_once_with()
+
+
 class SingleInstanceTests(unittest.TestCase):
+    def test_tray_icon_is_created_once_without_hiding_main_window(self):
+        application = object.__new__(BridgeApp)
+        application.root = Mock()
+        application.tray_icon = None
+        application.tray_actions = queue.Queue()
+
+        with patch("app.pystray.Icon") as icon:
+            application._ensure_tray_icon()
+            application._ensure_tray_icon()
+
+        icon.assert_called_once()
+        icon.return_value.run_detached.assert_called_once_with()
+        application.root.withdraw.assert_not_called()
+        self.assertIn(
+            "self._ensure_tray_icon()", inspect.getsource(BridgeApp._poll_initialization)
+        )
+
+    def test_tray_exit_is_processed_while_main_window_is_visible(self):
+        application = object.__new__(BridgeApp)
+        application.activation_event = None
+        application.tray_actions = queue.Queue()
+        application.tray_actions.put("exit")
+        application.root = Mock()
+        application.exit_app = Mock()
+
+        application._poll_tray_actions()
+
+        application.exit_app.assert_called_once_with()
+        application.root.after.assert_not_called()
+
     def test_activation_is_acknowledged_after_existing_window_is_restored(self):
         application = object.__new__(BridgeApp)
         application.activation_event = 11
