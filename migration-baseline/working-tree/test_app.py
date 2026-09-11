@@ -1,0 +1,1050 @@
+import ctypes
+import inspect
+import json
+import queue
+import re
+import threading
+import unittest
+import win32clipboard
+from pathlib import Path
+from unittest.mock import Mock, patch
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
+
+from app import (
+    BridgeApp,
+    BridgeServer,
+    RoundedCard,
+    NoTextInputFocusError,
+    THEMES,
+    WEB_PAGE,
+    WindowsUnicodeInput,
+    add_character_count,
+    choose_lan_ip,
+    load_or_create_token,
+    load_saved_lan_ip,
+    load_settings,
+    report_fatal_error,
+    startup_lan_binding,
+    startup_command,
+    update_config,
+    windows_colorref,
+)
+
+
+def replay_in_smart_markdown_editor(inputs, initial_text=""):
+    output = list(initial_text)
+    shift_pressed = False
+    selection_start = None
+    for item in inputs:
+        key = item.keyboard
+        released = bool(key.flags & WindowsUnicodeInput.KEYEVENTF_KEYUP)
+        if key.flags & WindowsUnicodeInput.KEYEVENTF_UNICODE:
+            if not released:
+                output.append(chr(key.scan_code))
+            continue
+        if key.virtual_key == WindowsUnicodeInput.VK_SHIFT:
+            shift_pressed = not released
+            continue
+        if released:
+            continue
+        if key.virtual_key == WindowsUnicodeInput.VK_RETURN and shift_pressed:
+            line_start = "".join(output).rfind("\n") + 1
+            current_line = "".join(output[line_start:])
+            markdown_prefix = re.match(
+                r"\s*(?:(?:\d+[.)]|[-+*>])\s+)", current_line
+            )
+            output.append("\n")
+            if markdown_prefix:
+                output.extend(" " * len(markdown_prefix.group(0)))
+        elif key.virtual_key == WindowsUnicodeInput.VK_HOME and shift_pressed:
+            selection_start = "".join(output).rfind("\n") + 1
+        elif key.virtual_key == WindowsUnicodeInput.VK_BACK:
+            if selection_start is not None:
+                del output[selection_start:]
+                selection_start = None
+            elif output:
+                output.pop()
+
+    raw = "".join(output)
+    return raw.encode("utf-16-le", "surrogatepass").decode("utf-16-le")
+
+
+class ServerStartupTests(unittest.TestCase):
+    def test_binding_skips_reverse_dns_because_only_numeric_ip_is_used(self):
+        with patch("socket.getfqdn", side_effect=AssertionError("reverse DNS must not run")):
+            server = BridgeServer(("127.0.0.1", 0), "test-token", lambda _text: None)
+        server.server_close()
+
+
+class BridgeServerTests(unittest.TestCase):
+    def setUp(self):
+        self.received = []
+        self.enter_presses = 0
+        self.config_file = Path(__file__).with_name("test-server-config.json")
+        self.config_file.unlink(missing_ok=True)
+
+        def press_enter():
+            self.enter_presses += 1
+
+        self.server = BridgeServer(
+            ("127.0.0.1", 0),
+            "test-token",
+            self.received.append,
+            enter_callback=press_enter,
+            config_file=self.config_file,
+        )
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.base_url = f"http://127.0.0.1:{self.server.server_port}"
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.config_file.unlink(missing_ok=True)
+
+    def test_phone_page_requires_pairing_token(self):
+        with self.assertRaises(HTTPError) as error:
+            urlopen(self.base_url + "/", timeout=2)
+        self.assertEqual(error.exception.code, 403)
+
+    def test_phone_page_embeds_the_same_app_icon(self):
+        page = self.server.page.decode("utf-8")
+        self.assertIn("data:image/png;base64,", page)
+        self.assertNotIn("{{APP_ICON_BASE64}}", page)
+
+    def test_valid_text_is_forwarded_to_input_callback(self):
+        payload = json.dumps({"text": "测试语音输入"}).encode("utf-8")
+        request = Request(
+            self.base_url + "/send?token=test-token",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(request, timeout=2) as response:
+            result = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(self.received, ["测试语音输入"])
+
+    def test_empty_text_is_rejected(self):
+        payload = json.dumps({"text": ""}).encode("utf-8")
+        request = Request(
+            self.base_url + "/send?token=test-token", data=payload, method="POST"
+        )
+        with self.assertRaises(HTTPError) as error:
+            urlopen(request, timeout=2)
+        self.assertEqual(error.exception.code, 400)
+        self.assertEqual(self.received, [])
+
+    def test_confirmed_enter_request_presses_computer_enter_once(self):
+        request = Request(
+            self.base_url + "/enter?token=test-token", data=b"", method="POST"
+        )
+        with urlopen(request, timeout=2) as response:
+            result = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(self.enter_presses, 1)
+        self.assertEqual(self.received, [])
+
+    def test_paused_computer_rejects_phone_input(self):
+        self.server.accepting_phone_text = False
+        payload = json.dumps({"text": "不应输入"}).encode("utf-8")
+        request = Request(
+            self.base_url + "/send?token=test-token", data=payload, method="POST"
+        )
+        with self.assertRaises(HTTPError) as error:
+            urlopen(request, timeout=2)
+        self.assertEqual(error.exception.code, 423)
+        self.assertEqual(self.received, [])
+
+    def test_paused_computer_rejects_enter_request(self):
+        self.server.accepting_phone_text = False
+        request = Request(
+            self.base_url + "/enter?token=test-token", data=b"", method="POST"
+        )
+        with self.assertRaises(HTTPError) as error:
+            urlopen(request, timeout=2)
+
+        self.assertEqual(error.exception.code, 423)
+        self.assertEqual(self.enter_presses, 0)
+
+    def test_computer_text_is_received_by_phone(self):
+        message_id = self.server.queue_for_phone("电脑发给手机")
+        url = (
+            self.base_url
+            + "/receive?token=test-token&after=0&session="
+            + self.server.session_id
+        )
+        with urlopen(url, timeout=2) as response:
+            result = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(
+            result["messages"], [{"id": message_id, "text": "电脑发给手机"}]
+        )
+
+    def test_phone_acknowledgement_removes_delivered_computer_text(self):
+        first_id = self.server.queue_for_phone("第一条")
+        second_id = self.server.queue_for_phone("第二条")
+        payload = json.dumps(
+            {"session": self.server.session_id, "through": first_id}
+        ).encode("utf-8")
+        request = Request(
+            self.base_url + "/ack?token=test-token",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        with urlopen(request, timeout=2) as response:
+            result = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(result["acknowledged"], 1)
+        self.assertEqual(
+            self.server.messages_for_phone(
+                0, self.server.session_id, wait_seconds=0
+            ),
+            [{"id": second_id, "text": "第二条"}],
+        )
+
+    def test_stale_phone_session_cannot_acknowledge_current_messages(self):
+        message_id = self.server.queue_for_phone("必须保留")
+        payload = json.dumps(
+            {"session": "old-session", "through": message_id}
+        ).encode("utf-8")
+        request = Request(
+            self.base_url + "/ack?token=test-token",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        with urlopen(request, timeout=2) as response:
+            result = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(result["acknowledged"], 0)
+        self.assertEqual(
+            self.server.messages_for_phone(
+                0, self.server.session_id, wait_seconds=0
+            ),
+            [{"id": message_id, "text": "必须保留"}],
+        )
+
+    def test_missing_computer_input_cursor_is_reported_to_phone(self):
+        self.server.input_callback = Mock(
+            side_effect=NoTextInputFocusError("电脑端未检测到输入光标")
+        )
+        payload = json.dumps({"text": "不要误发"}).encode("utf-8")
+        request = Request(
+            self.base_url + "/send?token=test-token",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        with self.assertRaises(HTTPError) as caught:
+            urlopen(request, timeout=2)
+
+        self.assertEqual(caught.exception.code, 409)
+        result = json.loads(caught.exception.read().decode("utf-8"))
+        self.assertEqual(result["error"], "电脑端未检测到输入光标")
+
+    def test_missing_computer_input_cursor_rejects_remote_enter(self):
+        self.server.enter_callback = Mock(
+            side_effect=NoTextInputFocusError("电脑端未检测到输入光标")
+        )
+        request = Request(
+            self.base_url + "/enter?token=test-token", data=b"", method="POST"
+        )
+
+        with self.assertRaises(HTTPError) as caught:
+            urlopen(request, timeout=2)
+
+        self.assertEqual(caught.exception.code, 409)
+        result = json.loads(caught.exception.read().decode("utf-8"))
+        self.assertEqual(result["error"], "电脑端未检测到输入光标")
+
+    def test_mobile_confirmation_settings_are_stored_by_computer(self):
+        with urlopen(
+            self.base_url + "/settings?token=test-token", timeout=2
+        ) as response:
+            defaults = json.loads(response.read().decode("utf-8"))
+        self.assertTrue(defaults["confirm_enter"])
+        self.assertFalse(defaults["confirm_send"])
+
+        payload = json.dumps(
+            {"confirm_enter": False, "confirm_send": True}
+        ).encode("utf-8")
+        request = Request(
+            self.base_url + "/settings?token=test-token",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(request, timeout=2) as response:
+            saved = json.loads(response.read().decode("utf-8"))
+
+        self.assertFalse(saved["confirm_enter"])
+        self.assertTrue(saved["confirm_send"])
+        persisted = load_settings(self.config_file)
+        self.assertFalse(persisted["confirm_enter"])
+        self.assertTrue(persisted["confirm_send"])
+
+
+class NetworkSelectionTests(unittest.TestCase):
+    def setUp(self):
+        self.config_file = Path(__file__).with_name("test-network-config.json")
+        self.config_file.unlink(missing_ok=True)
+
+    def tearDown(self):
+        self.config_file.unlink(missing_ok=True)
+
+    def test_real_lan_address_is_preferred_over_virtual_adapters(self):
+        addresses = ["198.18.0.1", "26.136.123.102", "192.168.10.104"]
+        self.assertEqual(choose_lan_ip(addresses), "192.168.10.104")
+
+    def test_default_gateway_adapter_wins_over_host_only_virtual_network(self):
+        addresses = ["192.168.56.1", "192.168.10.104"]
+        self.assertEqual(
+            choose_lan_ip(addresses, {"192.168.10.104"}),
+            "192.168.10.104",
+        )
+
+    def test_first_selected_address_is_persisted(self):
+        with patch("app.local_ip", return_value="192.168.10.104"):
+            displayed_ip, bind_ip, available = startup_lan_binding(self.config_file)
+
+        self.assertEqual(displayed_ip, "192.168.10.104")
+        self.assertEqual(bind_ip, "192.168.10.104")
+        self.assertTrue(available)
+        self.assertEqual(load_saved_lan_ip(self.config_file), "192.168.10.104")
+
+    def test_restart_reuses_saved_address_without_selecting_another_one(self):
+        update_config({"lan_ip": "192.168.10.104"}, self.config_file)
+        with patch(
+            "app.local_ip",
+            side_effect=AssertionError("restart must not select a new address"),
+        ), patch(
+            "app.active_ipv4_addresses", return_value={"192.168.10.104"}
+        ):
+            result = startup_lan_binding(self.config_file)
+
+        self.assertEqual(result, ("192.168.10.104", "192.168.10.104", True))
+
+    def test_stale_saved_address_is_not_silently_replaced(self):
+        update_config({"lan_ip": "192.168.53.26"}, self.config_file)
+        with patch(
+            "app.local_ip",
+            side_effect=AssertionError("only manual refresh may select a new address"),
+        ), patch(
+            "app.active_ipv4_addresses", return_value={"192.168.10.104"}
+        ):
+            result = startup_lan_binding(self.config_file)
+
+        self.assertEqual(result, ("192.168.53.26", "127.0.0.1", False))
+        self.assertEqual(load_saved_lan_ip(self.config_file), "192.168.53.26")
+
+
+class NetworkRebindTests(unittest.TestCase):
+    @staticmethod
+    def fake_server(ip):
+        server = type("FakeServer", (), {})()
+        server.server_port = 8765
+        server.token = "test-token"
+        server.input_callback = lambda _text: None
+        server.status_callback = lambda _message: None
+        server.enter_callback = lambda: None
+        server.config_file = Path("test-config.json")
+        server.accepting_phone_text = False
+        server._phone_condition = threading.Condition()
+        server._phone_messages = [{"id": 1, "text": "待发送"}]
+        server._next_message_id = 2
+        server.serve_forever = lambda: None
+        server.shutdown = lambda: None
+        server.server_close = lambda: None
+        server.bound_ip = ip
+        return server
+
+    def test_manual_refresh_rebinds_and_persists_current_lan_ip(self):
+        application = object.__new__(BridgeApp)
+        application.closing = False
+        application.lan_ip = "192.168.5.6"
+        application.server_bound_ip = "192.168.5.6"
+        application.token = "test-token"
+        application.server = self.fake_server("192.168.5.6")
+        application.thread = None
+        application.refresh_pairing = Mock()
+        application.set_status = Mock()
+        replacement = self.fake_server("192.168.5.7")
+
+        with patch("app.local_ip", return_value="192.168.5.7"), patch(
+            "app.BridgeServer", return_value=replacement
+        ) as create_server, patch("app.update_config") as save_config:
+            changed = application._refresh_network_binding()
+
+        self.assertTrue(changed)
+        self.assertEqual(application.lan_ip, "192.168.5.7")
+        self.assertIs(application.server, replacement)
+        self.assertFalse(replacement.accepting_phone_text)
+        self.assertEqual(replacement._phone_messages, [{"id": 1, "text": "待发送"}])
+        create_server.assert_called_once()
+        save_config.assert_called_once_with(
+            {"lan_ip": "192.168.5.7"}, application.server.config_file
+        )
+        application.refresh_pairing.assert_called_once_with()
+
+    def test_manual_refresh_keeps_server_when_lan_ip_is_unchanged(self):
+        application = object.__new__(BridgeApp)
+        application.closing = False
+        application.lan_ip = "192.168.5.7"
+        application.server_bound_ip = "192.168.5.7"
+        application.server = self.fake_server("192.168.5.7")
+        application.set_status = Mock()
+
+        with patch("app.local_ip", return_value="192.168.5.7"), patch(
+            "app.BridgeServer"
+        ) as create_server:
+            changed = application._refresh_network_binding()
+
+        self.assertFalse(changed)
+        create_server.assert_not_called()
+        application.set_status.assert_called_once_with(
+            "当前地址未变化：192.168.5.7"
+        )
+
+    def test_temporary_network_loss_does_not_replace_lan_server_with_loopback(self):
+        application = object.__new__(BridgeApp)
+        application.closing = False
+        application.lan_ip = "192.168.10.104"
+        application.server_bound_ip = "192.168.10.104"
+        application.server = self.fake_server("192.168.10.104")
+        application.set_status = Mock()
+
+        with patch("app.local_ip", return_value="127.0.0.1"), patch(
+            "app.BridgeServer"
+        ) as create_server:
+            changed = application._refresh_network_binding()
+
+        self.assertFalse(changed)
+        create_server.assert_not_called()
+        application.set_status.assert_called_once_with(
+            "当前未找到可用局域网，地址保持不变"
+        )
+
+    def test_opening_qr_or_restoring_window_cannot_refresh_address(self):
+        self.assertNotIn(
+            "self._refresh_network_binding()", inspect.getsource(BridgeApp.toggle_qr)
+        )
+        self.assertNotIn(
+            "self._refresh_network_binding()",
+            inspect.getsource(BridgeApp.restore_from_tray),
+        )
+
+
+class TransferAnimationTests(unittest.TestCase):
+    def setUp(self):
+        self.animation_time = 0.0
+        clock = patch("app.time.perf_counter", side_effect=lambda: self.animation_time)
+        clock.start()
+        self.addCleanup(clock.stop)
+
+    def make_application(self, expanded=False):
+        application = object.__new__(BridgeApp)
+        application.root = Mock()
+        application.root.winfo_width.return_value = 580
+        application.root.winfo_height.return_value = 620 if expanded else 400
+        application.transfer_shell = Mock()
+        application.transfer_shell.winfo_height.return_value = 320 if expanded else 100
+        application.transfer_shell.content.winfo_reqheight.return_value = 298
+        application.transfer_shell.inset = 11
+        application.transfer_content = Mock()
+        application.transfer_toggle_button = Mock()
+        application.main_frame = Mock()
+        application.main_frame.winfo_reqheight.return_value = 600 if expanded else 380
+        application.transfer_expanded = expanded
+        application.transfer_collapsed_height = 100
+        application.transfer_collapsed_window_height = 400
+        application.closing = False
+        application.window_max_size = (1920, 1080)
+        application.settings = {"show_desktop_to_phone": True}
+        return application
+
+    def finish_animation(self, application):
+        callbacks = 0
+        while application.transfer_animating:
+            self.animation_time += 0.001
+            callback = application.root.after_idle.call_args.args[0]
+            callback()
+            callbacks += 1
+            self.assertLess(callbacks, 300)
+
+    def test_expansion_adds_card_height_to_existing_window_in_smooth_steps(self):
+        application = self.make_application()
+        application.toggle_transfer_panel()
+        self.assertTrue(application.transfer_animating)
+        self.finish_animation(application)
+
+        heights = [
+            int(call.args[0].split("x")[1])
+            for call in application.root.geometry.call_args_list
+        ]
+        self.assertGreater(len(heights), 49)
+        self.assertAlmostEqual(self.animation_time, 0.2, places=3)
+        application.root.after.assert_not_called()
+        self.assertEqual(heights[-1], 620)
+        self.assertEqual(heights, sorted(heights))
+        card_heights = [
+            call.kwargs["height"]
+            for call in application.transfer_shell.configure.call_args_list[1:]
+        ]
+        self.assertTrue(all(280 <= window - card <= 300 for window, card in zip(heights, card_heights)))
+        self.assertEqual(card_heights[-1], 340)
+        application.root.resizable.assert_not_called()
+        application.root.withdraw.assert_not_called()
+        application.transfer_shell.pack_configure.assert_called_with(fill="both", expand=True)
+        application.root.maxsize.assert_called_with(1920, 1080)
+        self.assertEqual(application.root.update.call_count, len(heights))
+
+    def test_delayed_frame_catches_up_instead_of_extending_animation(self):
+        application = self.make_application()
+        application.toggle_transfer_panel()
+        self.animation_time = 0.25
+        callback = application.root.after_idle.call_args.args[0]
+        callback()
+        self.assertFalse(application.transfer_animating)
+        application.root.geometry.assert_called_with("580x620")
+        self.assertEqual(application.root.update.call_count, 2)
+
+    def test_rendering_time_is_budgeted_before_the_200ms_deadline(self):
+        application = self.make_application()
+        def render_frame():
+            self.animation_time += 0.016
+        application.root.update.side_effect = render_frame
+        application.toggle_transfer_panel()
+        self.animation_time = 0.184
+        application.root.after_idle.call_args.args[0]()
+        self.assertFalse(application.transfer_animating)
+        self.assertAlmostEqual(self.animation_time, 0.2)
+        application.root.geometry.assert_called_with("580x620")
+
+    def test_variable_render_cost_cannot_move_the_animation_backwards(self):
+        application = self.make_application()
+        application.toggle_transfer_panel()
+        self.animation_time = 0.05
+        application.root.update.side_effect = lambda: setattr(self, "animation_time", 0.08)
+        application.root.after_idle.call_args.args[0]()
+        application.root.update.side_effect = None
+        application.root.after_idle.call_args.args[0]()
+        application.root.after_idle.call_args.args[0]()
+        heights = [int(call.args[0].split("x")[1]) for call in application.root.geometry.call_args_list]
+        self.assertEqual(heights, sorted(heights))
+
+    def test_startup_preparation_is_included_in_animation_budget(self):
+        application = self.make_application()
+        application.transfer_content.update_idletasks.side_effect = lambda: setattr(self, "animation_time", 0.04)
+        application.toggle_transfer_panel()
+        self.finish_animation(application)
+        self.assertAlmostEqual(self.animation_time, 0.2, places=3)
+
+    def test_expansion_includes_unused_space_without_changing_window_target(self):
+        for spare in (0, 20, 60):
+            with self.subTest(spare=spare):
+                application = self.make_application()
+                application.main_frame.winfo_reqheight.return_value = 400 - spare
+                application.toggle_transfer_panel()
+                self.finish_animation(application)
+                application.root.geometry.assert_called_with("580x620")
+                application.transfer_shell.configure.assert_called_with(height=320 + spare)
+
+    def test_collapse_preserves_original_target_after_spare_space_is_absorbed(self):
+        application = self.make_application(expanded=True)
+        application.transfer_shell.winfo_height.return_value = 340
+        application.toggle_transfer_panel()
+        self.finish_animation(application)
+        application.root.geometry.assert_called_with("580x400")
+        application.transfer_shell.configure.assert_called_with(height=100)
+
+    def test_close_processed_during_redraw_does_not_touch_destroyed_window(self):
+        application = self.make_application()
+        application.root.update.side_effect = lambda: setattr(application, "closing", True)
+        application.toggle_transfer_panel()
+        self.assertFalse(application.transfer_animating)
+        application.root.after.assert_not_called()
+        application.root.after_idle.assert_not_called()
+
+    def test_ready_frame_is_not_throttled_by_refresh_rate(self):
+        application = self.make_application()
+        application.toggle_transfer_panel()
+        self.animation_time = 0.001
+        callback = application.root.after_idle.call_args.args[0]
+        callback()
+        self.assertEqual(application.root.geometry.call_count, 2)
+        application.root.after.assert_not_called()
+        self.finish_animation(application)
+
+    def test_easing_keeps_slow_ends_and_faster_middle_without_changing_duration(self):
+        application = self.make_application()
+        application.toggle_transfer_panel()
+        heights = []
+        for timestamp in (0.05, 0.1, 0.15, 0.2):
+            self.animation_time = timestamp
+            callback = application.root.after_idle.call_args.args[0]
+            callback()
+            heights.append(int(application.root.geometry.call_args.args[0].split("x")[1]))
+        self.assertEqual(heights, [434, 510, 586, 620])
+        self.assertFalse(application.transfer_animating)
+
+    def test_collapse_keeps_content_until_animation_finishes_and_ignores_double_click(self):
+        application = self.make_application(expanded=True)
+        application.toggle_transfer_panel()
+        application.transfer_content.pack_forget.assert_not_called()
+        application.toggle_transfer_panel()
+        self.assertFalse(application.transfer_expanded)
+        self.finish_animation(application)
+
+        application.transfer_content.pack_forget.assert_called_once_with()
+        application.root.geometry.assert_called_with("580x400")
+        application.transfer_shell.configure.assert_called_with(height=100)
+        application.transfer_shell.pack_configure.assert_called_with(fill="x", expand=False)
+
+    def test_collapsed_window_locks_only_height_without_changing_window_style(self):
+        application = self.make_application()
+        application._update_transfer_size_limits()
+
+        application.root.minsize.assert_called_once_with(520, 400)
+        application.root.maxsize.assert_called_once_with(1920, 400)
+        application.root.resizable.assert_not_called()
+
+    def test_collapse_after_manual_stretch_restores_original_window_height(self):
+        application = self.make_application(expanded=True)
+        application.root.winfo_height.return_value = 820
+        application.transfer_shell.winfo_height.return_value = 540
+        application.toggle_transfer_panel()
+        self.finish_animation(application)
+
+        application.root.geometry.assert_called_with("580x400")
+        application.transfer_shell.configure.assert_called_with(height=100)
+
+    def test_expanded_window_restores_vertical_resize_and_reserves_required_content(self):
+        application = self.make_application(expanded=True)
+        application._update_transfer_size_limits()
+
+        application.root.maxsize.assert_called_once_with(1920, 1080)
+        application.root.minsize.assert_called_once_with(520, 620)
+
+
+class RoundedBackgroundTests(unittest.TestCase):
+    def test_resize_reuses_background_without_a_delete_and_recreate_gap(self):
+        card = Mock()
+        card.background_items = []
+        card.radius = 12
+        card.fill_color = "#112233"
+        card.create_rectangle.side_effect = [1, 2]
+        card.create_arc.side_effect = [3, 4, 5, 6]
+        RoundedCard._draw_background(card, 580, 60)
+        RoundedCard._draw_background(card, 580, 90)
+        self.assertEqual(card.background_items, [1, 2, 3, 4, 5, 6])
+        self.assertEqual(card.create_rectangle.call_count, 2)
+        self.assertEqual(card.create_arc.call_count, 4)
+        card.delete.assert_not_called()
+        self.assertEqual(card.coords.call_count, 6)
+        card.itemconfigure.assert_called_with("rounded_background", fill="#112233")
+
+    def test_main_window_is_painted_before_becoming_visible(self):
+        application = object.__new__(BridgeApp)
+        application.root = Mock()
+        application.root.winfo_exists.return_value = True
+        application._center_window = Mock()
+        application._apply_window_chrome = Mock()
+        painted = []
+        application.root.update.side_effect = lambda: painted.append(True)
+        def change_alpha(option, value):
+            if value == 1.0:
+                self.assertEqual(painted, [True])
+        application.root.attributes.side_effect = change_alpha
+        application._show_centered_window(application.root)
+        application.root.update.assert_called_once_with()
+
+
+class SingleInstanceTests(unittest.TestCase):
+    def test_tray_icon_is_created_once_without_hiding_main_window(self):
+        application = object.__new__(BridgeApp)
+        application.root = Mock()
+        application.tray_icon = None
+        application.tray_actions = queue.Queue()
+
+        with patch("app.pystray.Icon") as icon:
+            application._ensure_tray_icon()
+            application._ensure_tray_icon()
+
+        icon.assert_called_once()
+        icon.return_value.run_detached.assert_called_once_with()
+        application.root.withdraw.assert_not_called()
+        self.assertIn(
+            "self._ensure_tray_icon()", inspect.getsource(BridgeApp._poll_initialization)
+        )
+
+    def test_tray_exit_is_processed_while_main_window_is_visible(self):
+        application = object.__new__(BridgeApp)
+        application.activation_event = None
+        application.tray_actions = queue.Queue()
+        application.tray_actions.put("exit")
+        application.root = Mock()
+        application.exit_app = Mock()
+
+        application._poll_tray_actions()
+
+        application.exit_app.assert_called_once_with()
+        application.root.after.assert_not_called()
+
+    def test_activation_is_acknowledged_after_existing_window_is_restored(self):
+        application = object.__new__(BridgeApp)
+        application.activation_event = 11
+        application.activation_ack_event = 12
+        application.tray_actions = queue.Queue()
+        application.restore_from_tray = Mock()
+        application.root = Mock()
+        application.closing = False
+        kernel32 = Mock()
+        kernel32.WaitForSingleObject.return_value = 0
+
+        with patch("app.ctypes.windll.kernel32", kernel32):
+            application._poll_tray_actions()
+
+        kernel32.ResetEvent.assert_called_once_with(11)
+        application.restore_from_tray.assert_called_once_with()
+        kernel32.SetEvent.assert_called_once_with(12)
+
+    def test_restore_shows_window_before_leaving_tray_icon_available(self):
+        application = object.__new__(BridgeApp)
+        application.root = Mock()
+        application.root.winfo_id.return_value = 123
+        application.tray_icon = Mock()
+
+        with patch("app.ctypes.windll.user32") as user32:
+            application.restore_from_tray()
+
+        application.root.deiconify.assert_called_once_with()
+        application.root.state.assert_called_once_with("normal")
+        application.tray_icon.stop.assert_not_called()
+        user32.SetForegroundWindow.assert_called_once_with(123)
+
+    def test_fatal_error_is_recorded_instead_of_silent_exit(self):
+        log_file = Path(__file__).with_name("test-crash.log")
+        log_file.unlink(missing_ok=True)
+        try:
+            with patch("app.ctypes.windll.user32") as user32:
+                try:
+                    raise RuntimeError("startup failed")
+                except RuntimeError as error:
+                    report_fatal_error(error, log_file)
+
+            contents = log_file.read_text(encoding="utf-8")
+            self.assertIn("RuntimeError: startup failed", contents)
+            self.assertIn("Traceback", contents)
+            user32.MessageBoxW.assert_called_once()
+        finally:
+            log_file.unlink(missing_ok=True)
+
+
+class PairingTokenTests(unittest.TestCase):
+    def test_token_is_reused_until_pairing_is_rotated(self):
+        config_file = Path(__file__).with_name("test-token-config.json")
+        try:
+            first = load_or_create_token(config_file)
+            second = load_or_create_token(config_file)
+            rotated = load_or_create_token(config_file, rotate=True)
+        finally:
+            config_file.unlink(missing_ok=True)
+
+        self.assertEqual(first, second)
+        self.assertNotEqual(first, rotated)
+
+    def test_settings_and_character_count_persist_without_replacing_token(self):
+        config_file = Path(__file__).with_name("test-settings-config.json")
+        try:
+            token = load_or_create_token(config_file)
+            update_config(
+                {
+                    "theme": "dark",
+                    "character_count": 12,
+                    "show_desktop_to_phone": False,
+                },
+                config_file,
+            )
+            self.assertEqual(add_character_count(5, config_file), 17)
+
+            settings = load_settings(config_file)
+            self.assertEqual(settings["theme"], "dark")
+            self.assertEqual(settings["character_count"], 17)
+            self.assertTrue(settings["confirm_enter"])
+            self.assertFalse(settings["confirm_send"])
+            self.assertFalse(settings["show_desktop_to_phone"])
+            self.assertEqual(load_or_create_token(config_file), token)
+        finally:
+            config_file.unlink(missing_ok=True)
+
+
+class DesktopFeatureTests(unittest.TestCase):
+    def test_press_enter_sends_only_enter_down_and_up(self):
+        class FakeSendInput:
+            def __call__(self, count, inputs, _input_size):
+                self.events = [
+                    (
+                        inputs[index].keyboard.virtual_key,
+                        inputs[index].keyboard.flags,
+                    )
+                    for index in range(count)
+                ]
+                return count
+
+        injector = object.__new__(WindowsUnicodeInput)
+        injector.user32 = type("FakeUser32", (), {})()
+        injector.user32.SendInput = FakeSendInput()
+
+        with patch.object(injector, "_require_text_input_target", return_value=(1, 2)):
+            injector.press_enter()
+
+        self.assertEqual(
+            injector.user32.SendInput.events,
+            [
+                (WindowsUnicodeInput.VK_RETURN, 0),
+                (
+                    WindowsUnicodeInput.VK_RETURN,
+                    WindowsUnicodeInput.KEYEVENTF_KEYUP,
+                ),
+            ],
+        )
+
+    def test_text_send_is_rejected_before_clipboard_changes_without_input_cursor(self):
+        injector = object.__new__(WindowsUnicodeInput)
+        injector.user32 = Mock()
+
+        with patch.object(
+            injector,
+            "_require_text_input_target",
+            side_effect=NoTextInputFocusError("电脑端未检测到输入光标"),
+        ), patch.object(injector, "_set_clipboard_text") as set_clipboard_text, patch.object(
+            injector, "_send_inputs"
+        ) as send_inputs:
+            with self.assertRaises(NoTextInputFocusError):
+                injector._paste_with_clipboard("不应发送")
+
+        set_clipboard_text.assert_not_called()
+        send_inputs.assert_not_called()
+
+    def test_focused_non_text_control_is_not_an_input_cursor(self):
+        injector = object.__new__(WindowsUnicodeInput)
+        injector.user32 = Mock()
+        injector.user32.GetForegroundWindow.return_value = 100
+        injector.user32.GetWindowThreadProcessId.return_value = 200
+
+        def set_gui_thread_info(_thread_id, pointer):
+            pointer._obj.focus = 300
+            pointer._obj.caret = 0
+            return True
+
+        def set_class_name(_window, buffer, _length):
+            buffer.value = "Button"
+            return len(buffer.value)
+
+        injector.user32.GetGUIThreadInfo.side_effect = set_gui_thread_info
+        injector.user32.GetClassNameW.side_effect = set_class_name
+
+        with patch.object(injector, "_uia_text_input_runtime_id", return_value=None):
+            self.assertIsNone(injector._text_input_target())
+
+    def test_reported_caret_is_accepted_as_input_cursor(self):
+        injector = object.__new__(WindowsUnicodeInput)
+        injector.user32 = Mock()
+        injector.user32.GetForegroundWindow.return_value = 100
+        injector.user32.GetWindowThreadProcessId.return_value = 200
+
+        def set_gui_thread_info(_thread_id, pointer):
+            pointer._obj.focus = 300
+            pointer._obj.caret = 300
+            return True
+
+        injector.user32.GetGUIThreadInfo.side_effect = set_gui_thread_info
+
+        self.assertEqual(injector._text_input_target(), (100, 300))
+
+    def test_uia_editable_control_is_accepted_when_browser_has_no_system_caret(self):
+        injector = object.__new__(WindowsUnicodeInput)
+        automation = Mock()
+        element = Mock()
+        pattern = Mock()
+        value_pattern = Mock()
+        automation.GetFocusedElement.return_value = element
+        element.CurrentProcessId = 200
+        element.CurrentControlType = 50004
+        element.CurrentIsEnabled = True
+        element.GetCurrentPattern.return_value = pattern
+        element.GetRuntimeId.return_value = (42, 7)
+        pattern.QueryInterface.return_value = value_pattern
+        value_pattern.CurrentIsReadOnly = False
+
+        with patch("app.comtypes.CoInitialize"), patch(
+            "app.comtypes.CoUninitialize"
+        ), patch("app.CreateObject", return_value=automation):
+            runtime_id = injector._uia_text_input_runtime_id(200)
+
+        self.assertEqual(runtime_id, (42, 7))
+
+    def test_all_text_uses_clipboard_path_without_replacing_control(self):
+        injector = object.__new__(WindowsUnicodeInput)
+        for source in ("一句话", "甲\n乙", "甲\r\n乙", "甲\r乙"):
+            with self.subTest(source=repr(source)), patch.object(
+                injector, "_paste_with_clipboard"
+            ) as paste, patch.object(
+                injector, "_insert_into_native_edit"
+            ) as replace_selection:
+                injector(source)
+            paste.assert_called_once_with(source)
+            replace_selection.assert_not_called()
+
+    def test_clipboard_text_is_published_without_normalizing_formatting(self):
+        injector = object.__new__(WindowsUnicodeInput)
+        source = "甲  \r\n\n\t乙 🌟"
+        with patch.object(injector, "_open_clipboard"), patch(
+            "app.win32clipboard.EmptyClipboard"
+        ), patch(
+            "app.win32clipboard.SetClipboardText"
+        ) as set_clipboard_text, patch(
+            "app.win32clipboard.CloseClipboard"
+        ):
+            injector._set_clipboard_text(1, source)
+
+        set_clipboard_text.assert_called_once_with(
+            source, win32clipboard.CF_UNICODETEXT
+        )
+
+    def test_unicode_event_builder_preserves_utf16_units(self):
+        inputs = WindowsUnicodeInput.build_inputs("A中🙂")
+
+        self.assertEqual(ctypes.sizeof(WindowsUnicodeInput.Input), 40)
+        self.assertEqual(
+            [inputs[index].keyboard.scan_code for index in range(0, len(inputs), 2)],
+            [0x0041, 0x4E2D, 0xD83D, 0xDE42],
+        )
+        for index in range(0, len(inputs), 2):
+            self.assertEqual(inputs[index].keyboard.flags, 0x0004)
+            self.assertEqual(inputs[index + 1].keyboard.flags, 0x0006)
+
+    def test_unicode_input_preserves_line_breaks_spaces_and_tabs(self):
+        source = "甲  \r\n\n\t乙"
+        inputs = WindowsUnicodeInput.build_inputs(source)
+
+        self.assertEqual(len(inputs), 38)
+        for start in (6, 20):
+            self.assertEqual(
+                [inputs[index].keyboard.virtual_key for index in range(start, start + 14)],
+                [0x10, 0x0D, 0x0D, 0x10, 0, 0, 0x10, 0x24, 0x24, 0x24, 0x24, 0x10, 0x08, 0x08],
+            )
+            self.assertEqual(
+                [inputs[index].keyboard.flags for index in range(start, start + 14)],
+                [0, 0, 0x0002, 0x0002, 0x0004, 0x0006, 0, 0x0001, 0x0003, 0x0001, 0x0003, 0x0002, 0, 0x0002],
+            )
+        self.assertEqual(replay_in_smart_markdown_editor(inputs), "甲  \n\n\t乙")
+
+    def test_unicode_input_preserves_markdown_and_uncommon_unicode_exactly(self):
+        cases = (
+            "新的问题出现了：\n"
+            "1. 急需新袜子架，原有太小。\n"
+            "2. 课桌扩展空间（侧边袋）\n"
+            "3. new手提袋（转移）\n"
+            "4. 🌟🌟🌟文言文教辅！\n"
+            "5. 买一堆书\n"
+            "6. 买一堆笔记本（原）\n"
+            "7. 错题本",
+            "# 标题\n\n- [ ] 待办\n- [x] 完成\n  - 嵌套项\n\n"
+            "> 引用第一行\n> 引用第二行\n\n"
+            "```python\nprint('原样  保留')\n```\n\n"
+            "| 列 A | 列 B |\n| --- | :---: |\n| `x` | **y** |",
+            "前导与尾随空格  \n\tTab\t内容\n\n"
+            "𠮷野家 · 龘 · e\u0301 · 👨‍👩‍👧‍👦 · \u00a0NBSP\u00a0 · 中文标点「」",
+        )
+        for source in cases:
+            with self.subTest(source=source[:20]):
+                batches = WindowsUnicodeInput.build_input_batches(source)
+                self.assertTrue(
+                    all(
+                        len(batch) <= WindowsUnicodeInput.MAX_EVENTS_PER_BATCH
+                        for batch in batches
+                    )
+                )
+                events = [item for batch in batches for item in batch]
+                actual = replay_in_smart_markdown_editor(events)
+                self.assertEqual(actual, source)
+
+    def test_windows_title_bar_color_uses_colorref_byte_order(self):
+        self.assertEqual(windows_colorref("#112233"), 0x00332211)
+
+    def test_packaged_autostart_uses_only_the_executable(self):
+        command = startup_command(
+            frozen=True,
+            executable=Path(r"C:\Tools\VoiceBridge.exe"),
+            script=Path(r"C:\ignored\app.py"),
+        )
+        self.assertEqual(command, '"C:\\Tools\\VoiceBridge.exe"')
+
+    def test_source_autostart_uses_pythonw_and_script(self):
+        command = startup_command(
+            frozen=False,
+            executable=Path(r"C:\Python\python.exe"),
+            script=Path(r"C:\VoiceBridge\app.py"),
+        )
+        self.assertEqual(
+            command,
+            '"C:\\Python\\pythonw.exe" "C:\\VoiceBridge\\app.py"',
+        )
+
+    def test_mobile_page_contains_requested_actions_confirmation_and_themes(self):
+        page = WEB_PAGE.read_text(encoding="utf-8")
+        self.assertIn('class="primary-actions"', page)
+        self.assertIn('id="send"', page)
+        self.assertIn('id="enter"', page)
+        self.assertIn('id="settings-toggle"', page)
+        self.assertIn('id="confirm-enter"', page)
+        self.assertIn('id="confirm-send"', page)
+        self.assertIn("'/settings?token='", page)
+        self.assertIn("confirmationSettings.confirm_send", page)
+        self.assertIn("confirmationSettings.confirm_enter", page)
+        self.assertIn("'/ack?token='", page)
+        self.assertIn("await acknowledgeReceived();", page)
+        self.assertIn("确认吗？", page)
+        self.assertIn("'/enter?token='", page)
+        self.assertEqual(page.count('class="icon-button"'), 3)
+        self.assertIn('id="undo"', page)
+        self.assertIn("clearedSnapshot", page)
+        self.assertIn("sentSnapshot", page)
+        self.assertIn("text.blur();", page)
+        self.assertIn('<option value="system">跟随系统</option>', page)
+        self.assertIn('<option value="light">浅色</option>', page)
+        self.assertIn('<option value="dark">深色</option>', page)
+        self.assertIn("prefers-color-scheme: dark", page)
+        self.assertIn("{{APP_ICON_BASE64}}", page)
+
+    def test_desktop_ui_uses_mobile_style_controls_and_collapsed_transfer_panel(self):
+        source = Path(__file__).with_name("app.py").read_text(encoding="utf-8")
+        self.assertIn("class AnimatedButton(tk.Canvas)", source)
+        self.assertIn('self.state = "normal"', source)
+        self.assertIn('self.state = "hover"', source)
+        self.assertIn('self.state = "pressed"', source)
+        self.assertIn("class ToggleSwitch(tk.Canvas)", source)
+        self.assertIn("self.transfer_expanded = False", source)
+        self.assertIn('"show_desktop_to_phone": True', source)
+        self.assertNotIn("ttk.Button(", source)
+        for palette in THEMES.values():
+            for key in (
+                "primary_hover",
+                "primary_pressed",
+                "secondary_hover",
+                "secondary_pressed",
+            ):
+                self.assertIn(key, palette)
+
+
+if __name__ == "__main__":
+    unittest.main()
