@@ -109,6 +109,8 @@ namespace
     }
 }
 
+void RunBridgeServerTests(std::filesystem::path const& directory);
+
 int wmain(int argc, wchar_t** argv)
 {
     if (argc != 2)
@@ -128,8 +130,9 @@ int wmain(int argc, wchar_t** argv)
         TestDefaultsRejectWrongJsonTypes(config);
         TestTokenAndCountPersistence(config);
         TestNativeAutostartCommand();
+        RunBridgeServerTests(directory);
         std::filesystem::remove(config);
-        std::wcout << L"SettingsStoreTests: 4 passed\n";
+        std::wcout << L"Native core tests: 10 passed\n";
         return 0;
     }
     catch (std::exception const& error)
