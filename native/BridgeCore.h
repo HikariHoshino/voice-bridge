@@ -261,6 +261,25 @@ inline void send_keys(std::initializer_list<std::pair<WORD, bool>> keys) {
         throw std::runtime_error("Windows 阻止了向当前光标输入文字");
     }
 }
+inline bool elevated_process(DWORD pid) {
+    bool elevated = false;
+    if (auto process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid)) {
+        HANDLE token{};
+        if (OpenProcessToken(process, TOKEN_QUERY, &token)) {
+            TOKEN_ELEVATION elevation{}; DWORD size{};
+            elevated = GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &size) && elevation.TokenIsElevated;
+            CloseHandle(token);
+        }
+        CloseHandle(process);
+    }
+    return elevated;
+}
+// UIPI silently drops SendInput aimed at an elevated window from a normal process,
+// while SendInput still reports success. Refuse instead of claiming the text arrived.
+inline bool input_blocked_by_elevation(int64_t window) {
+    DWORD pid = 0; GetWindowThreadProcessId(reinterpret_cast<HWND>(window), &pid);
+    return pid && elevated_process(pid) && !elevated_process(GetCurrentProcessId());
+}
 inline void paste_text_to(std::string const& text, HWND expected_window) {
     FocusDiagnostics diagnostics("paste");
     auto target = require_input_target();
@@ -272,6 +291,10 @@ inline void paste_text_to(std::string const& text, HWND expected_window) {
         FocusDiagnostics::event({{"event", "reject_target_changed"}, {"original_target", target}});
         throw NoInputFocus("电脑端输入光标已变化，请重新点击输入框后再发送");
     }
+    if (input_blocked_by_elevation(target.front())) {
+        FocusDiagnostics::event({{"event", "reject_elevated_target"}});
+        throw NoInputFocus("目标程序以管理员身份运行，Windows 阻止了自动输入；文字已放到电脑剪贴板，请在电脑上按 Ctrl+V");
+    }
     FocusDiagnostics::phase("send_input");
     send_keys({{WORD(VK_CONTROL), false}, {WORD('V'), false}, {WORD('V'), true}, {WORD(VK_CONTROL), true}});
 }
@@ -281,6 +304,10 @@ inline void press_enter_to(HWND expected_window) {
     auto target = require_input_target();
     FocusDiagnostics::phase("expected_window_check");
     if (expected_window && target.front() != reinterpret_cast<int64_t>(expected_window)) throw NoInputFocus("测试输入窗口未获得焦点，未发送任何按键");
+    if (input_blocked_by_elevation(target.front())) {
+        FocusDiagnostics::event({{"event", "reject_elevated_target"}});
+        throw NoInputFocus("目标程序以管理员身份运行，Windows 阻止了远程回车，请在电脑上按回车");
+    }
     FocusDiagnostics::phase("send_input"); send_keys({{WORD(VK_RETURN), false}, {WORD(VK_RETURN), true}});
 }
 inline void press_enter() { press_enter_to(nullptr); }

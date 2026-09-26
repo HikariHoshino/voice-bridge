@@ -60,3 +60,9 @@
 - HrASMain.exe（Chrome_WidgetWin_0，CEF）完全不提供无障碍树，焦点只落在外壳 Pane 上（有键盘焦点），12 次全部被拒。现改为：外壳本身持有键盘焦点时直接粘贴，与旧版行为一致。
 - 按钮、非 Chromium 窗口仍按原有严格规则判断。
 - 交付目录：`outputs/VoiceBridge-ChromiumFocus-20260926/`，EXE SHA-256：`D92B7AABAD1430FB5D8212BD65AA736428C3043DB4470FB96C55212503B7A940`。协议测试 39/39（新增 3 项判断规则测试）。未在 claude.exe / HrASMain.exe 上做实机验证，以日常使用为准。
+
+## 2026-09-26 管理员权限目标程序
+
+- 日志显示火绒应用商店（HrASMain.exe）以管理员身份运行。普通权限的声桥向它发送 Ctrl+V 时，Windows UIPI 静默丢弃按键，而 SendInput 仍返回 4/4 成功，导致界面显示"已输入"但文字未到。
+- 现改为：目标进程已提权而声桥未提权时，文字仍写入剪贴板，但返回 409 并提示在电脑上手动 Ctrl+V；远程回车同样拒绝并说明原因。
+- 交付目录：`outputs/VoiceBridge-Elevated-20260926/`，EXE SHA-256：`1FE7EF748A6179DCA24ED070C545F2653B3996547A795CD666234C159D60DE94`。协议测试 39/39；提权判断未做自动测试，需在火绒应用商店上实测。
