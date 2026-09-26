@@ -16,11 +16,36 @@ function applyLayout(animate) {
   send('layout', { height, min, animate });
 }
 
+// The window edge (animated per vsync by Main.cpp) drives the layout: while animating, the panel simply
+// fills whatever height the window has, so the content grows and shrinks exactly with the edge.
+const RESIZE_MS = 240;
+let settleTimer = 0;
+
 function toggleTransfer() {
-  if (state.expanded) state.expandedHeight = window.innerHeight;
+  const transfer = $('transfer');
+  clearTimeout(settleTimer);
+  const windowFrom = window.innerHeight;
+  if (state.expanded) state.expandedHeight = windowFrom;
   state.expanded = !state.expanded;
-  applyLayout(true);
-  if (state.expanded) setTimeout(() => $('text').focus(), 60);
+
+  // Measure the landing sizes; nothing paints in between.
+  transfer.classList.remove('open', 'animating', 'closing');
+  const collapsed = naturalHeight();
+  transfer.classList.add('open');
+  const openMin = naturalHeight();
+  const windowTo = state.expanded ? Math.max(openMin, state.expandedHeight || collapsed + EXPAND_EXTRA) : collapsed;
+
+  transfer.classList.add('animating');
+  transfer.classList.toggle('closing', !state.expanded);
+  $('toggle').setAttribute('aria-expanded', String(state.expanded));
+  $('toggle').setAttribute('aria-label', state.expanded ? '收起电脑到手机' : '展开电脑到手机');
+  send('layout', { height: windowTo, min: state.expanded ? openMin : collapsed, animate: true, duration: RESIZE_MS });
+
+  settleTimer = setTimeout(() => {
+    transfer.classList.remove('animating', 'closing');
+    transfer.classList.toggle('open', state.expanded);
+    if (state.expanded) $('text').focus();
+  }, RESIZE_MS + 40);
 }
 
 function setStatus(text) {

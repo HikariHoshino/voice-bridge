@@ -81,8 +81,15 @@ svg { display: block; }
 .transfer.open .toggle { box-shadow: var(--inset); }
 .transfer.open .toggle svg { transform: rotate(180deg); }
 .transfer .body { display: none; flex-grow: 1; min-height: 0; flex-direction: column; gap: 8px; padding-right: 6px; }
-.transfer.open .body { display: flex; animation: reveal 200ms cubic-bezier(.33,0,.67,1); }
+.transfer.open .body { display: flex; animation: reveal 240ms cubic-bezier(.4,0,.2,1); }
 @keyframes reveal { from { opacity: 0; transform: translateY(-12px); } to { opacity: 1; transform: none; } }
+/* While the window edge animates, the panel follows it exactly: it may shrink below its content and clips. */
+.transfer.animating { flex-shrink: 1; min-height: 0; overflow: hidden; }
+.transfer.animating .body, .transfer.animating textarea { min-height: 0; }
+.transfer.closing .body { animation: conceal 180ms cubic-bezier(.4,0,.2,1) forwards; }
+.transfer.closing .toggle { box-shadow: var(--raised-sm); }
+.transfer.closing .toggle svg { transform: none; }
+@keyframes conceal { to { opacity: 0; transform: translateY(-8px); } }
 textarea {
   flex-grow: 1; min-height: 72px; resize: none; border: none; border-radius: 12px; padding: 10px 12px;
   background: var(--bg); color: var(--ink); box-shadow: var(--inset-lg);

@@ -20,9 +20,9 @@ constexpr UINT WM_ACTIVATE_EXISTING = WM_APP + 2;
 constexpr UINT WM_TRAY = WM_APP + 3;
 constexpr UINT WM_SHELL_DESTROY = WM_APP + 4;   // deferred: never destroy a WebView inside its own event
 constexpr UINT WM_APP_EXIT = WM_APP + 5;
-constexpr UINT_PTR RESIZE_TIMER = 1, SHOT_TIMER = 2, PHONE_TIMER = 3;
+constexpr UINT_PTR SHOT_TIMER = 2, PHONE_TIMER = 3;
 constexpr UINT TRAY_OPEN = 1, TRAY_EXIT = 2;
-constexpr double RESIZE_SECONDS = 0.2;
+constexpr UINT WM_RUN_RESIZE = WM_APP + 6;
 constexpr wchar_t HOST[] = L"app.voicebridge";
 
 struct Shell {
@@ -32,7 +32,8 @@ struct Shell {
     ComPtr<ICoreWebView2> webview;
     double width = 420, min_height = 200;
     bool resizable = false, ready = false;
-    int resize_from = 0, resize_to = 0; ULONGLONG resize_start = 0;
+    int resize_from = 0, resize_to = 0; double resize_seconds = 0.24, final_min_height = 200;
+    LONGLONG resize_start = 0; bool resizing = false;
 };
 
 std::map<std::string, std::unique_ptr<Shell>> shells;   // keyed by page
@@ -61,6 +62,15 @@ void set_client_height(HWND hwnd, int pixels) {
     SetWindowPos(hwnd, nullptr, 0, 0, outer.right - outer.left, pixels + extra.cy, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
 }
 COLORREF surface() { return dark ? RGB(0x1E, 0x23, 0x2B) : RGB(0xE8, 0xEC, 0xF1); }
+
+// Same curve as the page's CSS cubic-bezier(.4,0,.2,1), so the window edge and the panel move together.
+double ease(double x) {
+    auto bezier = [](double t, double a, double b) { double u = 1 - t; return 3 * u * u * t * a + 3 * u * t * t * b + t * t * t; };
+    double lo = 0, hi = 1, t = x;
+    for (int i = 0; i < 30; ++i) { t = (lo + hi) / 2; (bezier(t, .4, .2) < x ? lo : hi) = t; }
+    return bezier(t, 0, 1);
+}
+LONGLONG now_ticks() { LARGE_INTEGER value{}; QueryPerformanceCounter(&value); return value.QuadPart; }
 
 void post(Shell* target, vb::json const& message) {
     if (target && target->webview && target->ready) target->webview->PostWebMessageAsJson(vb::wide(message.dump()).c_str());
@@ -166,11 +176,15 @@ void handle_web_message(Shell* s, vb::json const& message) {
             if (s->page == target) { post(s, {{"type", "shot"}, {"state", shot_state}}); SetTimer(s->hwnd, SHOT_TIMER, 900, nullptr); }
         }
     } else if (cmd == "layout") {
-        s->min_height = message.value("min", s->min_height);
-        s->resize_to = static_cast<int>(std::lround(message.value("height", s->min_height) * scale(s->hwnd)));
+        auto min = message.value("min", s->min_height);
+        s->resize_to = static_cast<int>(std::lround(message.value("height", min) * scale(s->hwnd)));
         RECT client{}; GetClientRect(s->hwnd, &client); s->resize_from = client.bottom;
-        if (message.value("animate", false) && s->resize_from != s->resize_to) { s->resize_start = GetTickCount64(); SetTimer(s->hwnd, RESIZE_TIMER, 8, nullptr); }
-        else set_client_height(s->hwnd, s->resize_to);
+        if (message.value("animate", false) && s->resize_from != s->resize_to) {
+            // The minimum only applies once the animation lands; applying it first would snap the window.
+            s->final_min_height = min; s->min_height = std::min(min, client.bottom / scale(s->hwnd));
+            s->resize_seconds = message.value("duration", 240) / 1000.0; s->resize_start = now_ticks();
+            if (!s->resizing) PostMessageW(s->hwnd, WM_RUN_RESIZE, 0, 0);
+        } else { s->min_height = min; set_client_height(s->hwnd, s->resize_to); }
         if (s->page != "main" && !IsWindowVisible(s->hwnd)) {
             if (auto owner = GetWindow(s->hwnd, GW_OWNER)) {
                 RECT o{}, r{}; GetWindowRect(owner, &o); GetWindowRect(s->hwnd, &r);
@@ -313,11 +327,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
         return 0;
     case WM_TIMER:
         if (!s) return 0;
-        if (wparam == RESIZE_TIMER) {
-            auto t = std::min(1.0, (GetTickCount64() - s->resize_start) / 1000.0 / RESIZE_SECONDS), eased = t * t * (3 - 2 * t);
-            set_client_height(hwnd, static_cast<int>(std::lround(s->resize_from + (s->resize_to - s->resize_from) * eased)));
-            if (t >= 1) KillTimer(hwnd, RESIZE_TIMER);
-        } else if (wparam == SHOT_TIMER) { KillTimer(hwnd, SHOT_TIMER); capture_and_exit(s); }
+        if (wparam == SHOT_TIMER) { KillTimer(hwnd, SHOT_TIMER); capture_and_exit(s); }
         else if (wparam == PHONE_TIMER && bridge) {
             auto active = bridge->phone_active();
             if (active != phone_connected) { phone_connected = active; broadcast({{"type", "phone"}, {"connected", active}}); }
@@ -347,6 +357,27 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
             break; }
         }
         return 0;
+    case WM_RUN_RESIZE: {
+        // One step per DWM composition (vsync) instead of a coarse WM_TIMER; messages keep flowing meanwhile.
+        if (!s || s->resizing) return 0;
+        s->resizing = true;
+        LARGE_INTEGER frequency{}; QueryPerformanceFrequency(&frequency);
+        bool quit = false; int quit_code = 0;
+        for (;;) {
+            auto t = std::min(1.0, (now_ticks() - s->resize_start) / static_cast<double>(frequency.QuadPart) / s->resize_seconds);
+            set_client_height(hwnd, static_cast<int>(std::lround(s->resize_from + (s->resize_to - s->resize_from) * ease(t))));
+            if (t >= 1) break;
+            DwmFlush();
+            MSG msg{};
+            while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+                if (msg.message == WM_QUIT) { quit = true; quit_code = static_cast<int>(msg.wParam); break; }
+                TranslateMessage(&msg); DispatchMessageW(&msg);
+            }
+            if (quit || reinterpret_cast<Shell*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA)) != s) break;
+        }
+        if (reinterpret_cast<Shell*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA)) == s) { s->resizing = false; s->min_height = s->final_min_height; }
+        if (quit) PostQuitMessage(quit_code);
+        return 0; }
     case WM_SHELL_DESTROY:
         if (s && s->page == "close" && main_window()) EnableWindow(main_window(), TRUE);
         DestroyWindow(hwnd); return 0;
@@ -358,7 +389,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
         return 0;
     case WM_DESTROY:
         if (s) {
-            auto page = s->page; KillTimer(hwnd, RESIZE_TIMER);
+            auto page = s->page;
             if (s->controller) s->controller->Close();
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0); shells.erase(page);
             if (page == "main") PostQuitMessage(0);
