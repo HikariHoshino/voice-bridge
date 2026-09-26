@@ -52,3 +52,11 @@
 - 删除 `accepting` 标志、423 分支及两项暂停测试；暂停按钮此前已移除。
 - 交付目录：`outputs/VoiceBridge-NoPause-20260926/`，EXE SHA-256：`A77C77CAAE37A21402A4ECB444BE84A9BCF41AD99DCBC0E7AFEFFB640017E9C9`。
 - 从交付目录运行协议测试 36/36（38 项减去两项暂停测试）。真实界面测试已运行，结果未读取；用户决定以日常使用为准。
+
+## 2026-09-26 Chromium 类程序的输入焦点识别
+
+依据 `%LOCALAPPDATA%/VoiceBridge/diagnostics` 日志：
+- claude.exe（Electron）首次发送时 UIA 只返回窗口外壳 Pane（View，无键盘焦点），约 1 秒后才出现 ProseMirror 输入框，4 次首发失败均属此类。现改为：遇到这种外壳最多等待 1 秒、每 50ms 重查。
+- HrASMain.exe（Chrome_WidgetWin_0，CEF）完全不提供无障碍树，焦点只落在外壳 Pane 上（有键盘焦点），12 次全部被拒。现改为：外壳本身持有键盘焦点时直接粘贴，与旧版行为一致。
+- 按钮、非 Chromium 窗口仍按原有严格规则判断。
+- 交付目录：`outputs/VoiceBridge-ChromiumFocus-20260926/`，EXE SHA-256：`D92B7AABAD1430FB5D8212BD65AA736428C3043DB4470FB96C55212503B7A940`。协议测试 39/39（新增 3 项判断规则测试）。未在 claude.exe / HrASMain.exe 上做实机验证，以日常使用为准。

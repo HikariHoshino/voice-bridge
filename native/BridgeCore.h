@@ -112,14 +112,22 @@ public:
 #include "FocusDiagnostics.h"
 namespace vb {
 struct NoInputFocus : std::runtime_error { using std::runtime_error::runtime_error; };
-inline std::vector<int64_t> input_target() {
+// Chromium/Electron/CEF windows report only their host pane when their accessibility
+// tree is not available. An unfocused pane means the tree is still being built after
+// the first UIA query; a focused pane means the app exposes no tree at all.
+enum class ChromiumHost { none, accept, pending };
+inline ChromiumHost chromium_host_focus(std::wstring const& window_class, int control_type, bool keyboard_focus) {
+    if (window_class.rfind(L"chrome_widgetwin", 0) != 0 || control_type != UIA_PaneControlTypeId) return ChromiumHost::none;
+    return keyboard_focus ? ChromiumHost::accept : ChromiumHost::pending;
+}
+inline std::vector<int64_t> input_target(bool* pending = nullptr) {
     FocusProbe probe;
     auto foreground = GetForegroundWindow();
     probe.data["foreground_hwnd"] = reinterpret_cast<int64_t>(foreground);
     if (!foreground) { probe.data["decision"] = "no_foreground"; return {}; }
     DWORD process = 0; auto thread = GetWindowThreadProcessId(foreground, &process);
     probe.data["foreground_pid"] = process; probe.data["foreground_tid"] = thread;
-    GUITHREADINFO info{sizeof(info)};
+    GUITHREADINFO info{sizeof(info)}; std::wstring focus_class;
     auto gui_ok = GetGUIThreadInfo(thread, &info); auto gui_error = gui_ok ? 0 : GetLastError();
     probe.data["gui_ok"] = gui_ok != 0; probe.data["gui_error"] = gui_error;
     probe.data["focus_hwnd"] = reinterpret_cast<int64_t>(info.hwndFocus);
@@ -129,7 +137,7 @@ inline std::vector<int64_t> input_target() {
     if (gui_ok && info.hwndFocus) {
         wchar_t name[256]{}; GetClassNameW(info.hwndFocus, name, 256);
         std::wstring type(name); std::transform(type.begin(), type.end(), type.begin(), towlower);
-        probe.data["window_class"] = utf8(type);
+        probe.data["window_class"] = utf8(type); focus_class = type;
         if (info.hwndCaret || type == L"edit" || type.find(L"richedit") != std::wstring::npos || type.find(L".edit.") != std::wstring::npos) {
             probe.data["decision"] = info.hwndCaret ? "accept_native_caret" : "accept_native_class";
             return {reinterpret_cast<int64_t>(foreground), reinterpret_cast<int64_t>(info.hwndFocus)};
@@ -155,6 +163,17 @@ inline std::vector<int64_t> input_target() {
         probe.data["keyboard_focus_hr"] = static_cast<long>(element->get_CurrentHasKeyboardFocus(&focused)); probe.data["keyboard_focus"] = focused != 0;
         probe.data["password_hr"] = static_cast<long>(element->get_CurrentIsPassword(&password)); probe.data["password"] = password != 0;
         probe.data["offscreen_hr"] = static_cast<long>(element->get_CurrentIsOffscreen(&offscreen)); probe.data["offscreen"] = offscreen != 0;
+        if (pid == static_cast<int>(process) && enabled) switch (chromium_host_focus(focus_class, type, focused != 0)) {
+            case ChromiumHost::accept:
+                result = {reinterpret_cast<int64_t>(foreground), process, reinterpret_cast<int64_t>(info.hwndFocus)};
+                probe.data["decision"] = "accept_chromium_no_accessibility"; probe.data["target"] = result;
+                if (SUCCEEDED(initialized)) CoUninitialize();
+                return result;
+            case ChromiumHost::pending:
+                if (pending) *pending = true;
+                probe.data["decision"] = "pending_chromium_accessibility"; throw std::runtime_error("accessibility pending");
+            case ChromiumHost::none: break;
+        }
         if (pid != static_cast<int>(process) || !enabled || (type != UIA_EditControlTypeId && type != UIA_DocumentControlTypeId)) {
             probe.data["decision"] = pid != static_cast<int>(process) ? "reject_pid_mismatch" : !enabled ? "reject_disabled" : "reject_control_type";
             throw std::runtime_error("not editable");
@@ -194,9 +213,15 @@ inline std::vector<int64_t> input_target() {
     return result;
 }
 inline std::vector<int64_t> require_input_target() {
-    auto target = input_target();
-    if (target.empty()) throw NoInputFocus("电脑端未检测到输入光标，请先在电脑输入框中点击一下");
-    return target;
+    // Only a Chromium tree that is still being built is worth waiting for (up to 1s).
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    for (;;) {
+        bool pending = false; auto target = input_target(&pending);
+        if (!target.empty()) return target;
+        if (!pending || std::chrono::steady_clock::now() >= deadline) break;
+        Sleep(50);
+    }
+    throw NoInputFocus("电脑端未检测到输入光标，请先在电脑输入框中点击一下");
 }
 inline void clipboard(std::wstring const& text) {
     auto owner = CreateWindowExW(0, L"STATIC", L"", 0, 0, 0, 0, 0, nullptr, nullptr, nullptr, nullptr);

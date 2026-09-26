@@ -16,6 +16,9 @@ inline int run_tests(fs::path const& report) {
         std::ifstream diagnostic_input(diagnostic_path); std::string diagnostic_line; std::getline(diagnostic_input, diagnostic_line);
         check(json::parse(diagnostic_line) == diagnostic_record, "diagnostics retain control type and rejection reason as valid JSON");
         check(!FocusDiagnostics::write(diagnostic_record, diagnostic_path / "not-a-directory.jsonl"), "unwritable diagnostic destination returns failure without throwing into input handling");
+        check(chromium_host_focus(L"chrome_widgetwin_0", UIA_PaneControlTypeId, true) == ChromiumHost::accept, "CEF apps without an accessibility tree (HrASMain) still accept phone text when their window owns keyboard focus");
+        check(chromium_host_focus(L"chrome_widgetwin_1", UIA_PaneControlTypeId, false) == ChromiumHost::pending, "an Electron window whose accessibility tree is still being built (claude.exe first send) is waited for instead of rejected");
+        check(chromium_host_focus(L"chrome_widgetwin_1", UIA_ButtonControlTypeId, true) == ChromiumHost::none && chromium_host_focus(L"inputsitewindowclass", UIA_PaneControlTypeId, true) == ChromiumHost::none, "buttons and non-Chromium panes keep the strict input check");
         auto test_config = report.parent_path() / ("config-" + random_token(8) + ".json");
         Config config(test_config);
         check(config.settings() == defaults(), "missing configuration uses the original defaults");
