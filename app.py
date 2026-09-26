@@ -43,6 +43,7 @@ from comtypes.gen.UIAutomationClient import (  # noqa: E402
 
 
 APP_NAME = "声桥"
+APP_VERSION = "VB-0.1.0-TEST09"
 DEFAULT_PORT = 8765
 MAX_TEXT_BYTES = 100_000
 CONFIG_FILE = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "VoiceBridge" / "config.json"
@@ -1129,6 +1130,7 @@ class RoundedCard(tk.Canvas):
             highlightthickness=0,
         )
         self.fill_color = fill_color
+        self.background_items = []
         self.radius = radius
         self.inset = max(4, radius // 2)
         self.content = ttk.Frame(self, padding=padding, style=content_style)
@@ -1160,7 +1162,6 @@ class RoundedCard(tk.Canvas):
         self._draw_background(event.width, event.height)
 
     def _draw_background(self, width: int, height: int) -> None:
-        self.delete("rounded_background")
         radius = min(self.radius, width // 2, height // 2)
         if radius <= 0:
             return
@@ -1169,25 +1170,31 @@ class RoundedCard(tk.Canvas):
             "outline": "",
             "tags": "rounded_background",
         }
-        self.create_rectangle(radius, 0, width - radius, height, **options)
-        self.create_rectangle(0, radius, width, height - radius, **options)
         diameter = radius * 2
-        for x, y, start in (
+        rectangles = (
+            (radius, 0, width - radius, height),
+            (0, radius, width, height - radius),
+        )
+        arcs = (
             (0, 0, 90),
             (width - diameter, 0, 0),
             (width - diameter, height - diameter, 270),
             (0, height - diameter, 180),
-        ):
-            self.create_arc(
-                x,
-                y,
-                x + diameter,
-                y + diameter,
-                start=start,
-                extent=90,
-                style="pieslice",
-                **options,
-            )
+        )
+        if not self.background_items:
+            for coordinates in rectangles:
+                self.background_items.append(self.create_rectangle(*coordinates, **options))
+            for x, y, start in arcs:
+                self.background_items.append(self.create_arc(
+                    x, y, x + diameter, y + diameter,
+                    start=start, extent=90, style="pieslice", **options,
+                ))
+        else:
+            for item, coordinates in zip(self.background_items[:2], rectangles):
+                self.coords(item, *coordinates)
+            for item, (x, y, _start) in zip(self.background_items[2:], arcs):
+                self.coords(item, x, y, x + diameter, y + diameter)
+            self.itemconfigure("rounded_background", fill=self.fill_color)
         self.tag_lower("rounded_background")
 
 
@@ -1588,7 +1595,8 @@ class BridgeApp:
         self.palette = THEMES[self.theme_name].copy()
         self.root = tk.Tk()
         self.root.withdraw()
-        self.root.title(APP_NAME)
+        self.root.title(f"{APP_NAME} · {APP_VERSION}（测试版）")
+        self.window_max_size = self.root.maxsize()
         self.root.resizable(False, False)
         self.root.configure(background=self.palette["root"])
         self.root.tk.call("tk", "scaling", self.root.winfo_fpixels("1i") / 72.0)
@@ -1717,6 +1725,8 @@ class BridgeApp:
         self._show_centered_window(self.root)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
+        self._update_transfer_size_limits()
+        self._ensure_tray_icon()
         self.root.after(100, self._poll_tray_actions)
 
     def _inject_and_count(self, injector: WindowsUnicodeInput, text: str) -> None:
@@ -1763,6 +1773,11 @@ class BridgeApp:
         self._center_window(window)
         window.update_idletasks()
         self._apply_window_chrome(window)
+        if window is self.root:
+            # Complete the first paint while transparent, before revealing the window.
+            window.update()
+            if not window.winfo_exists():
+                return
         try:
             window.attributes("-alpha", 1.0)
         except tk.TclError:
@@ -1953,23 +1968,33 @@ class BridgeApp:
         self.transfer_toggle_button.pack(side="right")
 
         self.transfer_content = ttk.Frame(transfer_card, style="Card.TFrame")
-        self.desktop_text = tk.Text(
+        self.desktop_input_shell = RoundedCard(
             self.transfer_content,
+            self.palette["card"],
+            self.palette["input"],
+            padding=0,
+            radius=12,
+            content_style="Input.TFrame",
+        )
+        self.desktop_input_shell.pack(fill="both", expand=True, pady=(12, 10))
+        self.desktop_text = tk.Text(
+            self.desktop_input_shell.content,
             width=48,
             height=5,
             wrap="word",
             font=("Microsoft YaHei UI", 10),
             relief="flat",
-            highlightthickness=1,
+            highlightthickness=0,
             background=self.palette["input"],
             foreground=self.palette["ink"],
             insertbackground=self.palette["ink"],
             highlightbackground=self.palette["line"],
             highlightcolor="#2563EB",
             padx=12,
-            pady=10,
+            pady=5,
         )
-        self.desktop_text.pack(fill="both", expand=True, pady=(12, 10))
+        self.desktop_text.pack(fill="both", expand=True)
+        self.desktop_input_shell.fit_content()
         self.desktop_text.bind("<Return>", self._handle_enter)
         self.desktop_text.bind("<Control-Return>", self._handle_control_enter)
         send_row = ttk.Frame(self.transfer_content, style="Card.TFrame")
@@ -2024,6 +2049,7 @@ class BridgeApp:
         style.configure("Title.TLabel", background=palette["root"], foreground=palette["ink"], font=("Microsoft YaHei UI", 22, "bold"))
         style.configure("Subtitle.TLabel", background=palette["root"], foreground=palette["muted"], font=("Microsoft YaHei UI", 10))
         style.configure("Card.TFrame", background=palette["card"])
+        style.configure("Input.TFrame", background=palette["input"])
         style.configure("Card.TLabel", background=palette["card"], foreground=palette["ink"])
         style.configure("CardTitle.TLabel", background=palette["card"], foreground=palette["ink"], font=("Microsoft YaHei UI", 11, "bold"))
         style.configure("Muted.TLabel", background=palette["card"], foreground=palette["muted"], font=("Microsoft YaHei UI", 9))
@@ -2216,27 +2242,93 @@ class BridgeApp:
         return "break"
 
     def toggle_transfer_panel(self) -> None:
+        if getattr(self, "transfer_animating", False):
+            return
+        started_at = time.perf_counter()
+        self.root.update_idletasks()
+        start_height = self.root.winfo_height()
+        start_card_height = self.transfer_shell.winfo_height()
+        spare_height = max(0, start_height - self.main_frame.winfo_reqheight())
+        width = self.root.winfo_width()
+        self.transfer_shell.configure(height=start_card_height)
+        self.transfer_shell.pack_configure(fill="x", expand=False)
         self.transfer_expanded = not self.transfer_expanded
         if self.transfer_expanded:
+            self.transfer_collapsed_height = start_card_height
+            self.transfer_collapsed_window_height = start_height
             self.transfer_content.pack(fill="both", expand=True)
             self.transfer_toggle_button.set_icon("chevron-up")
-            self.transfer_shell.pack_configure(fill="both", expand=True)
-            minimum_height = 520
+            self.transfer_content.update_idletasks()
+            target_card_height = (
+                self.transfer_shell.content.winfo_reqheight()
+                + self.transfer_shell.inset * 2
+            )
         else:
-            self.transfer_content.pack_forget()
             self.transfer_toggle_button.set_icon("chevron-down")
-            self.transfer_shell.pack_configure(fill="x", expand=False)
-            minimum_height = 330
-        self.transfer_shell.fit_content()
+            target_card_height = self.transfer_collapsed_height
+        delta = target_card_height - start_card_height
+        window_delta = (
+            delta if self.transfer_expanded
+            else self.transfer_collapsed_window_height - start_height
+        )
+        if self.transfer_expanded:
+            # Include the space that pack(expand=True) will allocate at completion,
+            # without increasing the window's original target height.
+            delta += spare_height
+        self.transfer_animating = True
+        self.root.maxsize(*self.window_max_size)
+        self.root.minsize(520, 330)
+        render_cost = 0.0
+        previous_progress = 0.0
+
+        def animate() -> None:
+            nonlocal render_cost, previous_progress
+            if self.closing:
+                self.transfer_animating = False
+                return
+            frame_started = time.perf_counter()
+            # Target presentation time, not the time at which rendering starts.
+            elapsed = frame_started - started_at
+            linear = min(1.0, max(previous_progress, (elapsed + render_cost) / 0.2))
+            previous_progress = linear
+            progress = linear * linear * (3 - 2 * linear)
+            offset = round(delta * progress)
+            window_offset = round(window_delta * progress)
+            self.root.geometry(f"{width}x{start_height + window_offset}")
+            self.transfer_shell.configure(height=start_card_height + offset)
+            self.root.update_idletasks()
+            self.root.update()
+            render_cost = min(0.05, time.perf_counter() - frame_started)
+            if self.closing:
+                self.transfer_animating = False
+                return
+            if linear < 1.0:
+                # Render again when Tk is ready, without a timer or FPS cap.
+                self.root.after_idle(animate)
+                return
+            if not self.transfer_expanded:
+                self.transfer_content.pack_forget()
+            self.transfer_shell.pack_configure(
+                fill="both" if self.transfer_expanded else "x",
+                expand=self.transfer_expanded,
+            )
+            if self.transfer_expanded:
+                self.root.minsize(520, max(330, self.root.winfo_height()))
+            else:
+                self._update_transfer_size_limits()
+            self.transfer_animating = False
+
+        animate()
+
+    def _update_transfer_size_limits(self) -> None:
         self.root.update_idletasks()
-        self.root.minsize(520, minimum_height)
-        current_width = self.root.winfo_width()
-        current_height = self.root.winfo_height()
-        if self.transfer_expanded and current_height < minimum_height:
-            self.root.geometry(f"{current_width}x{minimum_height}")
-        elif not self.transfer_expanded and current_height > 430:
-            compact_height = max(self.main_frame.winfo_reqheight() + 20, 360)
-            self.root.geometry(f"{current_width}x{compact_height}")
+        if self.settings["show_desktop_to_phone"] and not self.transfer_expanded:
+            height = self.root.winfo_height()
+            self.root.minsize(520, height)
+            self.root.maxsize(self.window_max_size[0], height)
+        else:
+            self.root.maxsize(*self.window_max_size)
+            self.root.minsize(520, max(330, self.main_frame.winfo_reqheight() + 20))
 
     def _apply_desktop_to_phone_visibility(self) -> None:
         visible = self.settings["show_desktop_to_phone"]
@@ -2254,9 +2346,7 @@ class BridgeApp:
                 self.transfer_expanded = False
                 self.transfer_content.pack_forget()
                 self.transfer_toggle_button.set_icon("chevron-down")
-        minimum_height = 520 if visible and self.transfer_expanded else 300
-        self.root.minsize(520, minimum_height)
-        self.root.update_idletasks()
+        self._update_transfer_size_limits()
 
     def _handle_enter(self, _event=None):
         if self.settings["send_mode"] == "enter":
@@ -2610,6 +2700,9 @@ class BridgeApp:
         for switch in self.toggle_switches:
             switch.set_palette(self.palette)
         if hasattr(self, "desktop_text"):
+            self.desktop_input_shell.set_colors(
+                self.palette["card"], self.palette["input"]
+            )
             self.desktop_text.configure(
                 background=self.palette["input"],
                 foreground=self.palette["ink"],
@@ -2697,6 +2790,9 @@ class BridgeApp:
         if self.qr_window is not None and self.qr_window.winfo_exists():
             self.close_qr()
         self.root.withdraw()
+        self._ensure_tray_icon()
+
+    def _ensure_tray_icon(self) -> None:
         if self.tray_icon is None:
             menu = pystray.Menu(
                 pystray.MenuItem("打开声桥", lambda _icon, _item: self.tray_actions.put("show"), default=True),
