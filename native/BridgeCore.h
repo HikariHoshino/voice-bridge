@@ -129,7 +129,7 @@ inline std::vector<int64_t> input_target() {
         winrt::check_hresult(element->get_CurrentProcessId(&pid));
         winrt::check_hresult(element->get_CurrentControlType(&type));
         winrt::check_hresult(element->get_CurrentIsEnabled(&enabled));
-        if (pid != static_cast<int>(process) || !enabled || (type != UIA_EditControlTypeId && type != UIA_DocumentControlTypeId)) throw std::runtime_error("not editable");
+        if (pid != static_cast<int>(process) || !enabled) throw std::runtime_error("not editable");
         winrt::com_ptr<IUIAutomationValuePattern> value;
         element->GetCurrentPatternAs(UIA_ValuePatternId, __uuidof(IUIAutomationValuePattern), value.put_void());
         if (value) {
@@ -139,7 +139,10 @@ inline std::vector<int64_t> input_target() {
             BSTR role{}; element->get_CurrentAriaRole(&role);
             std::wstring aria(role ? role : L""); SysFreeString(role);
             winrt::com_ptr<IUnknown> pattern; element->GetCurrentPattern(UIA_TextPatternId, pattern.put());
-            if ((aria != L"textbox" && aria != L"searchbox") || !pattern) throw std::runtime_error("not textbox");
+            // Some applications expose a custom control type, but still
+            // provide a writable text pattern. The pattern is the reliable
+            // indication that the focused element is an input target.
+            if (!pattern || (aria != L"textbox" && aria != L"searchbox" && type != UIA_EditControlTypeId && type != UIA_DocumentControlTypeId)) throw std::runtime_error("not textbox");
         }
         SAFEARRAY* id{}; winrt::check_hresult(element->GetRuntimeId(&id));
         if (id) {
@@ -153,9 +156,15 @@ inline std::vector<int64_t> input_target() {
     return result;
 }
 inline std::vector<int64_t> require_input_target() {
-    auto target = input_target();
-    if (target.empty()) throw NoInputFocus("电脑端未检测到输入光标，请先在电脑输入框中点击一下");
-    return target;
+    // Browser and QQ UIA providers can publish the focused element a few
+    // milliseconds after the window receives focus. Allow that handoff to
+    // settle instead of rejecting the first phone send after startup.
+    for (int attempt = 0; attempt < 4; ++attempt) {
+        auto target = input_target();
+        if (!target.empty()) return target;
+        if (attempt != 3) Sleep(25);
+    }
+    throw NoInputFocus("电脑端未检测到输入光标，请先在电脑输入框中点击一下");
 }
 inline void clipboard(std::wstring const& text) {
     auto owner = CreateWindowExW(0, L"STATIC", L"", 0, 0, 0, 0, 0, nullptr, nullptr, nullptr, nullptr);
