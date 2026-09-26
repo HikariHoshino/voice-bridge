@@ -137,7 +137,7 @@ struct App : ApplicationT<App, Markup::IXamlMetadataProvider> {
     std::unique_ptr<vb::Config> config;
     std::unique_ptr<vb::Bridge> bridge;
     Microsoft::UI::Dispatching::DispatcherQueue dispatcher{nullptr};
-    Microsoft::UI::Dispatching::DispatcherQueueTimer poll{nullptr};
+    HANDLE activation_wait{};
     std::thread initialization;
     bool closing = false, expanded = false, animating = false, dark = false;
     double collapsed_height = 360, expanded_height = 540;
@@ -280,7 +280,7 @@ inline void App::OnLaunched(LaunchActivatedEventArgs const&) try {
     startup_stage = L"controls resources";
     Resources().MergedDictionaries().Append(XamlControlsResources());
     config = std::make_unique<vb::Config>(config_path); dark = config->settings()["theme"] == "dark";
-    window = Window(); window.Title(L"声桥 · Windows 原生版（测试版）"); dispatcher = window.DispatcherQueue();
+    window = Window(); window.Title(L"声桥"); dispatcher = window.DispatcherQueue();
     ui_dpi_scale = GetDpiForWindow(window_handle(window)) / 96.0;
     auto icon_file = (vb::executable_dir() / "assets/voice-bridge.ico").wstring();
     auto icon_dpi = GetDpiForWindow(window_handle(window));
@@ -343,10 +343,11 @@ inline void App::OnLaunched(LaunchActivatedEventArgs const&) try {
     startup_stage = L"activate window";
     window.Activate(); ShowWindow(window_handle(window), SW_SHOW); initialize_tray(); status("正在连接本机服务…");
     for (auto id : {L"QrButton", L"SendButton"}) find<Button>(id).IsEnabled(false);
-    poll = dispatcher.CreateTimer(); poll.Interval(100ms);
-    poll.Tick([this](auto&&, auto&&) {
-        if (activation_event && WaitForSingleObject(activation_event, 0) == WAIT_OBJECT_0) { ResetEvent(activation_event); restore(); if (activation_ack) SetEvent(activation_ack); }
-    }); poll.Start();
+    // Wake only when a second launch signals, instead of polling every 100ms.
+    if (activation_event) check_bool(RegisterWaitForSingleObject(&activation_wait, activation_event, [](PVOID context, BOOLEAN) {
+        auto app = static_cast<App*>(context); ResetEvent(activation_event);
+        app->dispatcher.TryEnqueue([app] { if (app->closing) return; app->restore(); if (activation_ack) SetEvent(activation_ack); });
+    }, this, INFINITE, WT_EXECUTEDEFAULT));
     auto input_test_window = ui_test_report.empty() ? nullptr : window_handle(window);
     initialization = std::thread([this, input_test_window] {
         try {

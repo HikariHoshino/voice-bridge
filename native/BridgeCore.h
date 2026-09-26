@@ -214,6 +214,13 @@ inline void clipboard(std::wstring const& text) {
         }
         if (!success) GlobalFree(memory);
     }
+    // Keep the text on the clipboard, but out of Win+V history and cloud sync.
+    if (success) for (auto format : {L"CanIncludeInClipboardHistory", L"CanUploadToCloudClipboard"}) {
+        if (auto flag = GlobalAlloc(GMEM_MOVEABLE, sizeof(DWORD))) {
+            if (auto value = static_cast<DWORD*>(GlobalLock(flag))) { *value = 0; GlobalUnlock(flag); }
+            if (!SetClipboardData(RegisterClipboardFormatW(format), flag)) GlobalFree(flag);
+        }
+    }
     CloseClipboard(); DestroyWindow(owner);
     if (!success) throw std::runtime_error("无法写入剪贴板");
 }
@@ -300,6 +307,7 @@ class Bridge {
     std::condition_variable condition_;
     std::deque<json> messages_;
     int64_t next_id_ = 1;
+    int receivers_ = 0;
     std::string token_, session_ = random_token(8), page_;
     std::function<void(std::string const&)> input_, status_;
     std::function<void()> enter_;
@@ -351,6 +359,9 @@ class Bridge {
             json found = json::array(); std::string session;
             {
                 std::unique_lock lock(mutex_);
+                // Stale phone tabs must not occupy the pool that serves /send and /enter.
+                if (receivers_ >= 8) { lock.unlock(); error(res, 503, "手机页面连接过多，请关闭多余的声桥页面"); return; }
+                ++receivers_; struct Leave { int& count; ~Leave() { --count; } } leave{receivers_};
                 if (req.get_param_value("session") != session_) after = 0;
                 condition_.wait_for(lock, std::chrono::seconds(20), [&] { return host.stopping || (!messages_.empty() && messages_.back()["id"].get<int64_t>() > after); });
                 for (auto const& item : messages_) if (item["id"].get<int64_t>() > after) found.push_back(item);

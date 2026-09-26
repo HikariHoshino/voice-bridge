@@ -62,6 +62,15 @@ inline int run_tests(fs::path const& report) {
         get = client.Get(path("/receive")); body = json::parse(get->body);
         check(body["messages"].size() == 50 && body["messages"][0]["text"] == "10", "offline queue retains only the newest 50 messages");
         get = client.Get(path("/receive") + "&after=abc"); check(get && get->status == 400, "invalid polling sequence fails loudly");
+        auto newest = std::to_string(body["messages"].back()["id"].get<int64_t>());
+        std::vector<std::future<httplib::Result>> pollers;
+        for (int i = 0; i < 8; ++i) pollers.push_back(std::async(std::launch::async, [&] { httplib::Client poller("127.0.0.1", bridge.port); poller.set_read_timeout(25); return poller.Get(path("/receive") + "&after=" + newest + "&session=" + session); }));
+        Sleep(500);
+        get = client.Get(path("/receive") + "&after=" + newest + "&session=" + session); check(get && get->status == 503, "excess stale phone tabs are refused instead of occupying more service threads");
+        result = post("/send", {{"text", "busy"}}); check(result && result->status == 200 && received == "busy", "phone input still works while the maximum number of phone tabs are waiting");
+        bridge.queue("release"); bool released = true;
+        for (auto& poller : pollers) { auto response = poller.get(); released = released && response && response->status == 200; }
+        check(released, "waiting phone tabs all receive new desktop text after the limit is reached");
         bridge.rotate(); get = client.Get(path("/settings")); check(get && get->status == 403, "re-pair immediately revokes old links");
         token = config.token(); get = client.Get(path("/settings")); check(get && get->status == 200, "new pairing token authenticates");
         auto original_port = bridge.port; bool replacement_failed = false;

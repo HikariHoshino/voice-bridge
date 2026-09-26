@@ -36,3 +36,13 @@
 ## 保护与恢复
 
 原件哈希和位置见源码 `BASELINE.md`。`55b0c2e` 保存原工作区基线；`167c142` 保存已通过启动、31 项协议与 21 项真实 UI 测试的修复。后续变更只涉及 `native/`。旧交付物与原配置未清理。
+
+## 2026-09-26 瘦身与小修（基于诊断版 `checkpoint/focus-diagnostics-20260912`）
+
+- 交付目录：`outputs/VoiceBridge-Slim-20260926/`，60.2 MB（原 148 MB）。EXE SHA-256：`31E5C25EEC16C2C2F61F0378FB9176D307256204D5B01ACA5423DBDBBA436367`。
+- `package.ps1` 不再复制 PDB/ILK、Windows AI/ML 运行库（onnxruntime、DirectML、Microsoft.Windows.AI/Workloads/Vision 等）和除 zh-CN、en-us 外的语言目录。
+- 剪贴板写入附加 `CanIncludeInClipboardHistory=0`、`CanUploadToCloudClipboard=0`：文字仍留在剪贴板，不进 Win+V 历史和云剪贴板。已在真实剪贴板上确认两种格式存在。
+- `/receive` 同时挂起上限 8 个，超出返回 503，手机页面按原有逻辑 1.5 秒后重试；保证 `/send`、`/enter` 始终有空闲线程。
+- 窗口标题改为"声桥"；单实例唤醒由 100ms 定时器轮询改为 `RegisterWaitForSingleObject`。
+- 从交付目录运行：协议测试 38/38（新增 3 项长轮询上限测试），真实界面测试 59/59。
+- 未改：暂停接收的残留代码（`accepting` 与 423 分支及其测试）仍保留，待用户决定。

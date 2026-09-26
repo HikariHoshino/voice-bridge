@@ -223,7 +223,8 @@ inline void App::minimize_to_tray() {
 inline void App::exit_app() {
     if (closing) return; closing = true;
     if (animating) { CompositionTarget::Rendering(rendering); animating = false; }
-    if (poll) poll.Stop(); if (initialization.joinable()) initialization.join(); bridge.reset();
+    if (activation_wait) { UnregisterWaitEx(activation_wait, INVALID_HANDLE_VALUE); activation_wait = nullptr; }
+    if (initialization.joinable()) initialization.join(); bridge.reset();
     Shell_NotifyIconW(NIM_DELETE, &tray);
     if (qr_window) qr_window.Close(); if (settings_window) settings_window.Close(); if (close_window) close_window.Close();
     RemoveWindowSubclass(window_handle(window), &App::window_proc, 1); window.Close();
