@@ -25,6 +25,12 @@ inline void invoke_button(Button const& button) {
     peer.GetPattern(Automation::Peers::PatternInterface::Invoke).as<Automation::Provider::IInvokeProvider>().Invoke();
 }
 inline Button caption_button(Window const& window, wchar_t const* name) { return window.Content().as<Grid>().FindName(name).as<Button>(); }
+inline FrameworkElement find_named(DependencyObject const& parent, wchar_t const* name) {
+    if (auto element = parent.try_as<FrameworkElement>(); element && element.Name() == name) return element;
+    for (int i = 0; i < VisualTreeHelper::GetChildrenCount(parent); ++i)
+        if (auto found = find_named(VisualTreeHelper::GetChild(parent, i), name)) return found;
+    return nullptr;
+}
 inline Button find_button(DependencyObject const& parent, std::wstring const& caption) {
     if (auto button = parent.try_as<Button>()) {
         if (auto text = button.Content().try_as<IPropertyValue>(); text && text.Type() == PropertyType::String && text.GetString() == caption) return button;
@@ -82,6 +88,74 @@ inline fire_and_forget App::run_ui_tests() {
             {"connection_height", find<Border>(L"ConnectionCard").ActualHeight()}, {"transfer_height", find<Border>(L"TransferCard").ActualHeight()},
             {"status_height", find<Border>(L"StatusCard").ActualHeight()}};
         co_await save_preview(window.Content().as<FrameworkElement>(), ui_test_report.parent_path() / "light-closed.png");
+        open_settings();
+        DWORD settings_cloaked = 0;
+        check_hresult(DwmGetWindowAttribute(window_handle(settings_window), DWMWA_CLOAKED, &settings_cloaked, sizeof(settings_cloaked)));
+        check(settings_cloaked != 0, "settings is concealed while its first XAML frame is not ready");
+        BYTE settings_alpha{}; DWORD alpha_flags{}; COLORREF alpha_color{};
+        auto read_settings_alpha = [&] {
+            check_bool(GetLayeredWindowAttributes(window_handle(settings_window), &alpha_color, &settings_alpha, &alpha_flags));
+            return settings_alpha;
+        };
+        check(read_settings_alpha() == 0, "settings starts transparent to prevent an unrendered frame flashing");
+        bool saw_fade_in = false, monotonic_fade_in = true; BYTE previous_alpha = 0;
+        for (int sample = 0; sample < 60; ++sample) {
+            co_await resume_after(16ms); co_await ui;
+            auto alpha = read_settings_alpha();
+            saw_fade_in |= alpha > 0 && alpha < 255;
+            monotonic_fade_in &= alpha >= previous_alpha; previous_alpha = alpha;
+            if (alpha == 255) break;
+        }
+        check(saw_fade_in && monotonic_fade_in && settings_alpha == 255, "settings fades progressively to full opacity instead of appearing instantly");
+        check_hresult(DwmGetWindowAttribute(window_handle(settings_window), DWMWA_CLOAKED, &settings_cloaked, sizeof(settings_cloaked)));
+        check(settings_cloaked == 0, "settings becomes visible after rendering and committing its first frame");
+        check(IsWindowVisible(window_handle(settings_window)), "ready settings window remains visible after fading in");
+        auto screen_dc = GetDC(nullptr); auto backing_dc = CreateCompatibleDC(screen_dc);
+        auto backing_pixel = CreateCompatibleBitmap(screen_dc, 1, 1); auto previous_bitmap = SelectObject(backing_dc, backing_pixel);
+        SendMessageW(window_handle(settings_window), WM_ERASEBKGND, reinterpret_cast<WPARAM>(backing_dc), 0);
+        auto backing_color = GetPixel(backing_dc, 0, 0); auto expected_background = palette(L"RootBrush").as<SolidColorBrush>().Color();
+        SelectObject(backing_dc, previous_bitmap); DeleteObject(backing_pixel); DeleteDC(backing_dc); ReleaseDC(nullptr, screen_dc);
+        check(backing_color == RGB(expected_background.R, expected_background.G, expected_background.B), "native settings backing surface uses the theme color rather than black");
+        auto settings_layout = find_named(settings_window.Content(), L"SettingsLayout");
+        auto settings_actions = find_named(settings_window.Content(), L"SettingsActions");
+        auto settings_scroll = find_named(settings_window.Content(), L"SettingsScroll").as<ScrollViewer>();
+        auto first_card = find_named(settings_window.Content(), L"SettingsInterfaceCard");
+        auto second_card = find_named(settings_window.Content(), L"SettingsBehaviorCard");
+        auto actions_position = settings_actions.TransformToVisual(settings_layout).TransformPoint({0, 0});
+        auto first_position = first_card.TransformToVisual(settings_layout).TransformPoint({0, 0});
+        auto second_position = second_card.TransformToVisual(settings_layout).TransformPoint({0, 0});
+        auto bottom_gap = settings_layout.ActualHeight() - actions_position.Y - settings_actions.ActualHeight();
+        check(std::abs(bottom_gap - 18) < 1, "settings footer keeps the full 18 pixel bottom inset");
+        check(settings_scroll.ScrollableHeight() < 2, "settings initial height fits its measured content without hidden options");
+        check(std::abs(first_card.ActualWidth() - second_card.ActualWidth()) < 1 && first_card.ActualWidth() > 450, "settings cards share a full-width aligned layout");
+        window_metrics["settings_layout"] = {{"body_height", settings_layout.ActualHeight()}, {"bottom_gap", bottom_gap}, {"scrollable_height", settings_scroll.ScrollableHeight()}, {"card_width", first_card.ActualWidth()}, {"first_left", first_position.X}, {"first_right", settings_layout.ActualWidth() - first_position.X - first_card.ActualWidth()}, {"second_left", second_position.X}, {"second_right", settings_layout.ActualWidth() - second_position.X - second_card.ActualWidth()}};
+        co_await save_preview(settings_window.Content().as<FrameworkElement>(), ui_test_report.parent_path() / "settings-layout-light.png");
+        check(std::abs(first_position.X - 18) < 1 && std::abs(settings_layout.ActualWidth() - first_position.X - first_card.ActualWidth() - 18) < 1, "settings cards preserve equal left and right insets");
+        auto settings_hidden_on_close = std::make_shared<bool>(false);
+        settings_window.Closed([settings_hidden_on_close, hwnd = window_handle(settings_window)](auto&&, auto&&) { *settings_hidden_on_close = !IsWindowVisible(hwnd); });
+        settings_window.Close();
+        check(*settings_hidden_on_close, "programmatic settings close hides the HWND before XAML destruction");
+        for (int cycle = 0; cycle < 2; ++cycle) {
+            change_theme(); open_settings(); co_await resume_after(400ms); co_await ui;
+            check_hresult(DwmGetWindowAttribute(window_handle(settings_window), DWMWA_CLOAKED, &settings_cloaked, sizeof(settings_cloaked)));
+            check(settings_cloaked == 0, "reopening settings in either theme reveals a completed frame");
+            if (cycle == 0) co_await save_preview(settings_window.Content().as<FrameworkElement>(), ui_test_report.parent_path() / "settings-ready-dark.png");
+            invoke_button(cycle == 0 ? find_button(settings_window.Content(), L"取消") : caption_button(settings_window, L"CaptionClose"));
+            co_await resume_after(80ms); co_await ui;
+            check(settings_window && IsWindowVisible(window_handle(settings_window)) && settings_window.Content() && read_settings_alpha() > 0 && settings_alpha < 255, "settings fades its live window before hiding or destroying the surface");
+            co_await resume_after(250ms); co_await ui;
+            check(!settings_window, "cancel and caption close both complete without leaving a hidden settings window");
+        }
+        open_settings();
+        for (int sample = 0; sample < 60 && read_settings_alpha() == 0; ++sample) { co_await resume_after(16ms); co_await ui; }
+        auto interrupted_alpha = read_settings_alpha();
+        check(interrupted_alpha > 0 && interrupted_alpha < 255, "rapid close test interrupts an active fade-in");
+        close_settings(); close_settings(); open_settings();
+        co_await resume_after(60ms); co_await ui;
+        check(settings_window && read_settings_alpha() <= interrupted_alpha, "closing during fade-in reverses from the current opacity without flashing or reopening");
+        co_await resume_after(250ms); co_await ui;
+        check(!settings_window, "repeated close requests finish without a stranded settings window");
+        restore(); co_await resume_after(200ms); co_await ui;
         invoke_button(find<Button>(L"TransferButton"));
         co_await resume_after(400ms); co_await ui;
         root.UpdateLayout();
@@ -177,7 +251,7 @@ inline fire_and_forget App::run_ui_tests() {
         draft_send = "enter"; draft_close = "tray";
         auto save = find_button(settings_window.Content(), L"保存设置");
         if (!save) throw std::runtime_error("Save settings button missing");
-        invoke_button(save); co_await resume_after(200ms); co_await ui;
+        invoke_button(save); co_await resume_after(350ms); co_await ui;
         response = vb::json::parse(to_string(co_await http("/settings")));
         check(!settings_window && response["body"]["confirm_send"] == true && response["body"]["confirm_enter"] == false && config->settings()["send_mode"] == "enter", "save settings commits choices and synchronizes phone confirmations");
         check(find<TextBlock>(L"CountText").Visibility() == Visibility::Collapsed, "character counter visibility follows the saved switch");

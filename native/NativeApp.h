@@ -148,6 +148,7 @@ struct App : ApplicationT<App, Markup::IXamlMetadataProvider> {
     event_token rendering{};
     NOTIFYICONDATAW tray{};
     HICON app_icon{};
+    HICON app_icon_small{};
     std::wstring startup_stage;
     TextBox qr_address{nullptr};
     Canvas qr_canvas{nullptr};
@@ -192,7 +193,7 @@ struct App : ApplicationT<App, Markup::IXamlMetadataProvider> {
         if (!target) return;
         auto hwnd = window_handle(target); BOOL enabled = dark;
         DwmSetWindowAttribute(hwnd, 20, &enabled, sizeof(enabled));
-        SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(app_icon));
+        SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(app_icon_small));
         SendMessageW(hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(app_icon));
         target.Content().as<FrameworkElement>().RequestedTheme(dark ? ElementTheme::Dark : ElementTheme::Light);
     }
@@ -203,6 +204,7 @@ struct App : ApplicationT<App, Markup::IXamlMetadataProvider> {
     void send();
     void toggle_transfer();
     void open_settings();
+    fire_and_forget close_settings();
     void open_qr();
     void draw_qr();
     void request_close();
@@ -253,7 +255,7 @@ inline void App::attach_frame(Window const& target, FrameworkElement const& cont
         }
     });
     frame.FindName(L"CaptionClose").as<Button>().Click([this, weak_window, main](auto&&, auto&&) {
-        safe([&] { if (main) request_close(); else if (auto w = weak_window.get()) w.Close(); });
+        safe([&] { if (main) request_close(); else if (auto w = weak_window.get()) { if (w == settings_window) close_settings(); else w.Close(); } });
     });
     auto update_regions = [weak_window, weak_frame, main, resizable] {
         auto w = weak_window.get(); auto f = weak_frame.get(); if (!w || !f || !f.XamlRoot()) return;
@@ -280,7 +282,12 @@ inline void App::OnLaunched(LaunchActivatedEventArgs const&) try {
     config = std::make_unique<vb::Config>(config_path); dark = config->settings()["theme"] == "dark";
     window = Window(); window.Title(L"声桥 · Windows 原生版（测试版）"); dispatcher = window.DispatcherQueue();
     ui_dpi_scale = GetDpiForWindow(window_handle(window)) / 96.0;
-    app_icon = static_cast<HICON>(LoadImageW(nullptr, (vb::executable_dir() / "assets/voice-bridge.ico").c_str(), IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE));
+    auto icon_file = (vb::executable_dir() / "assets/voice-bridge.ico").wstring();
+    auto icon_dpi = GetDpiForWindow(window_handle(window));
+    app_icon = static_cast<HICON>(LoadImageW(nullptr, icon_file.c_str(), IMAGE_ICON,
+        GetSystemMetricsForDpi(SM_CXICON, icon_dpi), GetSystemMetricsForDpi(SM_CYICON, icon_dpi), LR_LOADFROMFILE));
+    app_icon_small = static_cast<HICON>(LoadImageW(nullptr, icon_file.c_str(), IMAGE_ICON,
+        GetSystemMetricsForDpi(SM_CXSMICON, icon_dpi), GetSystemMetricsForDpi(SM_CYSMICON, icon_dpi), LR_LOADFROMFILE));
     startup_stage = L"theme dictionary";
     theme_resources = Markup::XamlReader::Load(scaled_font_xaml(vb::read_file(vb::executable_dir() / "Theme.xaml"))).as<ResourceDictionary>();
     Resources().MergedDictionaries().Append(theme_resources);
@@ -308,7 +315,7 @@ inline void App::OnLaunched(LaunchActivatedEventArgs const&) try {
     { RECT outer{}, client{}; auto hwnd = window_handle(window); GetWindowRect(hwnd, &outer); GetClientRect(hwnd, &client);
       window_border_width = outer.right - outer.left - client.right; window_border_height = outer.bottom - outer.top - client.bottom; }
     startup_stage = L"logo image";
-    find<Image>(L"Logo").Source(Imaging::BitmapImage(Uri(L"file:///" + (vb::executable_dir() / L"assets/voice-bridge.png").generic_wstring())));
+    find<Image>(L"Logo").Source(Imaging::SvgImageSource(Uri(L"file:///" + (vb::executable_dir() / L"assets/voice-bridge.svg").generic_wstring())));
     startup_stage = L"button icons";
     icon(find<Button>(L"SettingsButton"), L"settings");
     icon(find<Button>(L"QrButton"), L"qr"); icon(find<Button>(L"TransferButton"), L"down");
@@ -351,7 +358,9 @@ inline void App::OnLaunched(LaunchActivatedEventArgs const&) try {
             dispatcher.TryEnqueue([this, next] {
                 if (closing) return; bridge = std::move(*next);
                 for (auto id : {L"QrButton", L"SendButton"}) find<Button>(id).IsEnabled(true);
-                status(bridge->displayed_ip != bridge->bound_ip ? "已保存地址当前不可用，请打开二维码并点击“刷新地址”" : "等待手机连接");
+                status(bridge->displayed_ip != bridge->bound_ip ? "地址不可用，请刷新二维码" : "等待手机连接");
+                if (bridge->displayed_ip != bridge->bound_ip)
+                    ToolTipService::SetToolTip(find<TextBlock>(L"StatusText"), box_value(L"已保存地址当前不可用，请打开二维码并点击“刷新地址”"));
             });
         } catch (std::exception const& error) { auto message = std::string(error.what()); dispatcher.TryEnqueue([this, message] { status("启动失败：" + message); }); }
           catch (hresult_error const& error) { auto message = to_string(error.message()); dispatcher.TryEnqueue([this, message] { status("启动失败：" + message); }); }

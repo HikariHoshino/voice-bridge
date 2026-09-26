@@ -76,7 +76,7 @@ def main() -> None:
     icon.save(ASSETS / "voice-bridge.png")
     icon.save(
         ASSETS / "voice-bridge.ico",
-        sizes=[(16, 16), (20, 20), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
+        sizes=[(size, size) for size in (16, 20, 24, 28, 32, 40, 48, 64, 96, 128, 256)],
     )
 
 

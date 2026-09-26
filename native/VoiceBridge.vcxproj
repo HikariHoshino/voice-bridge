@@ -61,6 +61,7 @@
     <None Include="Theme.xaml"><CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory></None>
     <None Include="..\mobile.html"><Link>mobile.html</Link><CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory></None>
     <None Include="..\assets\voice-bridge.png"><Link>assets\voice-bridge.png</Link><CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory></None>
+    <None Include="..\assets\voice-bridge.svg"><Link>assets\voice-bridge.svg</Link><CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory></None>
     <None Include="..\assets\voice-bridge.ico"><Link>assets\voice-bridge.ico</Link><CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory></None>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

@@ -37,7 +37,7 @@
     <Border x:Name="StatusCard" Grid.Row="3" CornerRadius="12" Background="{ThemeResource StatusBrush}" Padding="18,15">
       <Grid>
         <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-        <StackPanel Orientation="Horizontal" Spacing="6"><TextBlock Text="●" Foreground="#10B981" FontSize="12"/><TextBlock x:Name="StatusText" Text="等待手机连接" Foreground="{ThemeResource StatusInkBrush}" FontSize="12" TextTrimming="CharacterEllipsis"/></StackPanel>
+        <Grid ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Text="●" Foreground="#10B981" FontSize="12"/><Viewbox Grid.Column="1" Stretch="Uniform" StretchDirection="DownOnly" HorizontalAlignment="Left"><TextBlock x:Name="StatusText" Text="等待手机连接" Foreground="{ThemeResource StatusInkBrush}" FontSize="12"/></Viewbox></Grid>
         <TextBlock x:Name="CountText" Grid.Column="1" Foreground="{ThemeResource StatusInkBrush}" FontSize="12" Margin="8,0,0,0"/>
       </Grid>
     </Border>
