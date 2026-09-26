@@ -35,7 +35,9 @@ inline int run_tests(fs::path const& report) {
         auto path = [&](std::string const& route) { return route + "?token=" + token; };
         auto post = [&](std::string const& route, json const& body) { return client.Post(path(route), body.dump(), "application/json"); };
         auto get = client.Get("/"); check(get && get->status == 403, "unpaired clients cannot load phone page");
+        check(!bridge.phone_active(), "a rejected pairing link does not mark the phone as connected");
         get = client.Get(path("/")); check(get && get->status == 200 && get->body.find("{{APP_ICON_BASE64}}") == std::string::npos && get->body.find("data:image/png;base64,") != std::string::npos, "phone page and inline icon are served without a cloud dependency");
+        check(bridge.phone_active() && !bridge.phone_active(0), "an authorized phone request marks the phone connected only within the activity window");
         auto text = std::string("  # 标题\r\n\n- 项目  \t😀𠮷\n```cpp\n  x = 1;\n```\n");
         auto result = post("/send", {{"text", text}});
         check(result && result->status == 200 && received == text, "phone text preserves CRLF LF whitespace tabs Markdown and non-BMP Unicode");

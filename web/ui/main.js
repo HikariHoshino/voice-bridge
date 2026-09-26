@@ -1,21 +1,6 @@
 'use strict';
-const host = window.chrome && window.chrome.webview;
-const $ = (id) => document.getElementById(id);
-const send = (cmd, extra = {}) => host && host.postMessage({ cmd, ...extra });
-const root = document.documentElement;
-
 const state = { sendMode: 'ctrl_enter', showDesktop: true, expanded: false, expandedHeight: 0, connected: false, ready: false };
-const EXPAND_EXTRA = 180;          // default growth of the window when the transfer panel opens
-const CONNECTED_HINTS = ['手机已连接', '已输入', '已按下回车', '手机已确认'];
-
-// Height the page needs with nothing stretched; the window is never allowed below it.
-function naturalHeight() {
-  const app = document.querySelector('.app');
-  app.style.height = 'auto';
-  const height = Math.ceil(app.getBoundingClientRect().height);
-  app.style.height = '';
-  return height;
-}
+const EXPAND_EXTRA = 180;   // default growth of the window when the transfer panel opens
 
 function applyLayout(animate) {
   const transfer = $('transfer');
@@ -38,15 +23,9 @@ function toggleTransfer() {
   if (state.expanded) setTimeout(() => $('text').focus(), 60);
 }
 
-function setTheme(dark, notify) {
-  root.classList.toggle('dark', dark);
-  if (notify) send('theme', { dark });
-}
-
 function setStatus(text) {
   $('status').textContent = text;
   $('status').title = text;
-  if (CONNECTED_HINTS.some((hint) => text.includes(hint))) setConnected(true);
 }
 
 function setConnected(connected) {
@@ -65,18 +44,16 @@ function applySendMode(mode) {
   $('shortcut').textContent = mode === 'enter' ? 'Enter 发送 · Ctrl + Enter 换行' : 'Ctrl + Enter 发送 · Enter 换行';
 }
 
-function sendText() {
-  const text = $('text').value;
-  send('send', { text });
-}
+const sendText = () => send('send', { text: $('text').value });
 
-const handlers = {
+Object.assign(handlers, {
   settings(m) {
-    setTheme(m.theme === 'dark', false);
+    setTheme(m.theme === 'dark');
     applySendMode(m.sendMode);
     state.showDesktop = m.showDesktop !== false;
     setCount(m.count, m.showCount);
     applyLayout(false);
+    enableTransitions();
   },
   bridge(m) {
     state.ready = !!m.ready;
@@ -88,28 +65,25 @@ const handlers = {
     }
     setConnected(state.connected);
   },
+  phone(m) { setConnected(!!m.connected); },
   status(m) { setStatus(m.text); setCount(m.count); },
   sent() { $('text').value = ''; },
   shot(m) {
     // Deterministic states for verification screenshots.
     document.body.classList.add('no-anim');
     const states = (m.state || '').split(',');
-    if (states.includes('dark')) setTheme(true, false);
+    if (states.includes('dark')) setTheme(true);
     if (states.includes('connected')) { setConnected(true); setStatus('已输入 36 个字符'); }
     if (states.includes('expanded')) {
       $('text').value = '晚上七点在三教 204 开组会，记得带上周的实验数据。';
       state.expanded = true; applyLayout(false);
     }
   }
-};
+});
 
-if (host) host.addEventListener('message', (event) => { const m = event.data; if (m && handlers[m.type]) handlers[m.type](m); });
-
-$('minimize').addEventListener('click', () => send('minimize'));
-$('close').addEventListener('click', () => send('close'));
-$('theme').addEventListener('click', () => setTheme(!root.classList.contains('dark'), true));
-$('settings').addEventListener('click', () => send('settings'));
-$('qr').addEventListener('click', () => send('qr'));
+$('theme').addEventListener('click', () => { const dark = !root.classList.contains('dark'); setTheme(dark); send('theme', { dark }); });
+$('settings').addEventListener('click', () => send('open', { page: 'settings' }));
+$('qr').addEventListener('click', () => send('open', { page: 'qr' }));
 $('toggle').addEventListener('click', toggleTransfer);
 $('send').addEventListener('click', sendText);
 $('text').addEventListener('keydown', (event) => {
@@ -118,10 +92,9 @@ $('text').addEventListener('keydown', (event) => {
   if ((state.sendMode === 'ctrl_enter' && ctrl) || (state.sendMode === 'enter' && !ctrl)) { event.preventDefault(); sendText(); }
   else if (state.sendMode === 'enter' && ctrl) {
     event.preventDefault();
-    const box = $('text'), start = box.selectionStart;
-    box.setRangeText('\n', start, box.selectionEnd, 'end');
+    const box = $('text');
+    box.setRangeText('\n', box.selectionStart, box.selectionEnd, 'end');
   }
 });
-window.addEventListener('contextmenu', (event) => { if (event.target.tagName !== 'TEXTAREA') event.preventDefault(); });
 
 send('ready');

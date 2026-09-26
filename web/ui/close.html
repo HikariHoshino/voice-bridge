@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'">
+<title>关闭声桥</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body class="no-anim">
+<div class="app">
+  <header class="titlebar">
+    <span class="title">关闭声桥</span>
+    <button class="cap close" data-cmd="close" aria-label="取消" title="取消"><svg width="9" height="9" viewBox="0 0 10 10"><path d="M1 1l8 8M9 1L1 9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
+  </header>
+  <main class="content dialog">
+    <div class="heading"><h1>关闭窗口后要做什么？</h1><p>可在设置中修改以后关闭窗口的默认行为。</p></div>
+    <div class="footer-actions">
+      <button class="pill-btn danger" id="exit">直接关闭</button>
+      <button class="primary" id="tray">最小化到托盘</button>
+    </div>
+  </main>
+</div>
+<script src="shell.js"></script>
+<script src="close.js"></script>
+</body>
+</html>

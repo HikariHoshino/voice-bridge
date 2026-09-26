@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'">
+<title>声桥设置</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body class="no-anim">
+<div class="app">
+  <header class="titlebar">
+    <span class="title">声桥设置</span>
+    <button class="cap close" data-cmd="close" aria-label="关闭" title="关闭"><svg width="9" height="9" viewBox="0 0 10 10"><path d="M1 1l8 8M9 1L1 9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
+  </header>
+  <main class="content">
+    <div class="heading"><h1>设置</h1><p>偏好保存在电脑，手机端打开页面时同步确认设置</p></div>
+    <section class="panel card">
+      <h2>界面与启动</h2>
+      <div class="setting"><span>开机后自动启动</span><button class="switch" role="switch" data-key="autostart" aria-checked="false" aria-label="开机后自动启动"><span class="knob"></span></button></div>
+      <div class="setting"><span>显示电脑 → 手机</span><button class="switch" role="switch" data-key="show_desktop_to_phone" aria-checked="false" aria-label="显示电脑到手机"><span class="knob"></span></button></div>
+      <div class="setting"><span>显示累计输入字符数</span><button class="switch" role="switch" data-key="show_char_count" aria-checked="false" aria-label="显示累计输入字符数"><span class="knob"></span></button></div>
+      <div class="setting"><span>累计字符 <span class="muted" id="count-now">当前 0 个</span></span><button class="pill-btn small danger" id="clear">清零</button></div>
+    </section>
+    <section class="panel card">
+      <h2>操作方式</h2>
+      <div class="field">
+        <span class="label" id="close-label">关闭主窗口时</span>
+        <div class="segmented" role="radiogroup" aria-labelledby="close-label" data-key="close_action">
+          <span class="thumb"></span>
+          <button role="radio" data-value="ask">每次询问</button><button role="radio" data-value="tray">最小化到托盘</button><button role="radio" data-value="exit">直接退出</button>
+        </div>
+      </div>
+      <div class="field">
+        <span class="label" id="send-label">电脑发送快捷键</span>
+        <div class="segmented" role="radiogroup" aria-labelledby="send-label" data-key="send_mode">
+          <span class="thumb"></span>
+          <button role="radio" data-value="ctrl_enter">Ctrl + Enter 发送</button><button role="radio" data-value="enter">Enter 发送</button>
+        </div>
+      </div>
+    </section>
+    <div class="footer-actions">
+      <button class="pill-btn" data-cmd="close">取消</button>
+      <button class="primary" id="save">保存设置</button>
+    </div>
+  </main>
+</div>
+<script src="shell.js"></script>
+<script src="settings.js"></script>
+</body>
+</html>

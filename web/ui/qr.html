@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'">
+<title>手机配对</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body class="no-anim">
+<div class="app">
+  <header class="titlebar">
+    <span class="title">手机配对</span>
+    <button class="cap close" data-cmd="close" aria-label="关闭" title="关闭"><svg width="9" height="9" viewBox="0 0 10 10"><path d="M1 1l8 8M9 1L1 9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
+  </header>
+  <main class="content centered">
+    <div class="heading center"><h1>扫描二维码连接声桥</h1><p>首次配对后请收藏手机页面</p></div>
+    <div class="qr-tray"><div class="qr-paper"><svg id="code" role="img" aria-label="手机配对二维码" viewBox="0 0 21 21" shape-rendering="crispEdges"><path id="modules" fill="#111827"/></svg></div></div>
+    <div class="address-field" id="address">正在生成地址…</div>
+    <div class="row-actions">
+      <button class="pill-btn" id="copy">复制访问地址</button>
+      <button class="primary" id="refresh">刷新地址</button>
+      <button class="pill-btn danger" id="rotate">重新配对</button>
+    </div>
+    <p class="warn-hint" id="rotate-hint" hidden>旧的手机链接会立即失效，再点一次“确认重新配对”</p>
+  </main>
+</div>
+<script src="shell.js"></script>
+<script src="qr.js"></script>
+</body>
+</html>

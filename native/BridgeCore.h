@@ -360,6 +360,7 @@ class Bridge {
     std::deque<json> messages_;
     int64_t next_id_ = 1;
     int receivers_ = 0;
+    std::atomic<ULONGLONG> last_seen_{0};
     std::string token_, session_ = random_token(8), page_;
     std::function<void(std::string const&)> input_, status_;
     std::function<void()> enter_;
@@ -387,6 +388,7 @@ class Bridge {
         host.server.new_task_queue = [] { return new httplib::ThreadPool(16); };
         host.server.set_pre_routing_handler([this](auto const& req, auto& res) {
             if (!authorized(req)) { error(res, 403, "配对链接无效"); return httplib::Server::HandlerResponse::Handled; }
+            last_seen_ = GetTickCount64();
             return httplib::Server::HandlerResponse::Unhandled;
         });
         host.server.Get("/", [this](auto const&, auto& res) {
@@ -465,6 +467,8 @@ class Bridge {
     }
 public:
     std::string displayed_ip, bound_ip;
+    // An open phone page long-polls at most every 20s, so 30s of silence means it is gone.
+    bool phone_active(ULONGLONG window_ms = 30000) const { auto seen = last_seen_.load(); return seen && GetTickCount64() - seen < window_ms; }
     int port = 8765;
     Bridge(Config& config, fs::path resources, std::function<void(std::string const&)> input = paste_text,
         std::function<void()> enter = press_enter, std::function<void(std::string const&)> status = [](auto const&) {})

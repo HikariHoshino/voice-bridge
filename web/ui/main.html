@@ -6,12 +6,12 @@
 <title>声桥</title>
 <link rel="stylesheet" href="app.css">
 </head>
-<body>
+<body class="no-anim">
 <div class="app">
   <header class="titlebar">
     <span class="title">声桥</span>
-    <button class="cap" id="minimize" aria-label="最小化" title="最小化"><svg width="9" height="9" viewBox="0 0 10 10"><path d="M1 5h8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
-    <button class="cap close" id="close" aria-label="关闭" title="关闭"><svg width="9" height="9" viewBox="0 0 10 10"><path d="M1 1l8 8M9 1L1 9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
+    <button class="cap" data-cmd="minimize" aria-label="最小化" title="最小化"><svg width="9" height="9" viewBox="0 0 10 10"><path d="M1 5h8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
+    <button class="cap close" data-cmd="close" aria-label="关闭" title="关闭"><svg width="9" height="9" viewBox="0 0 10 10"><path d="M1 1l8 8M9 1L1 9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
   </header>
   <main class="content">
     <section class="brand">
@@ -48,6 +48,7 @@
     <footer class="status"><span id="status">正在连接本机服务…</span><span id="count"></span></footer>
   </main>
 </div>
+<script src="shell.js"></script>
 <script src="main.js"></script>
 </body>
 </html>
