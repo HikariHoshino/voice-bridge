@@ -7,6 +7,15 @@ inline int run_tests(fs::path const& report) {
     auto check = [&](bool condition, char const* intent) { results.push_back({{"test", intent}, {"passed", condition}}); };
     try {
         fs::create_directories(report.parent_path());
+        auto diagnostic_path = report.parent_path() / "diagnostic-writer.jsonl";
+        auto diagnostic_record = json{{"event", "probe_test"}, {"control_type", UIA_EditControlTypeId}, {"decision", "reject_read_only"}};
+        SetLastError(1234);
+        auto diagnostic_written = FocusDiagnostics::write(diagnostic_record, diagnostic_path);
+        auto diagnostic_error = GetLastError();
+        check(diagnostic_written && diagnostic_error == 1234, "diagnostics persist without changing the caller Win32 error");
+        std::ifstream diagnostic_input(diagnostic_path); std::string diagnostic_line; std::getline(diagnostic_input, diagnostic_line);
+        check(json::parse(diagnostic_line) == diagnostic_record, "diagnostics retain control type and rejection reason as valid JSON");
+        check(!FocusDiagnostics::write(diagnostic_record, diagnostic_path / "not-a-directory.jsonl"), "unwritable diagnostic destination returns failure without throwing into input handling");
         auto test_config = report.parent_path() / ("config-" + random_token(8) + ".json");
         Config config(test_config);
         check(config.settings() == defaults(), "missing configuration uses the original defaults");

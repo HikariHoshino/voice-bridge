@@ -108,47 +108,88 @@ public:
     }
 };
 
+} // namespace vb
+#include "FocusDiagnostics.h"
+namespace vb {
 struct NoInputFocus : std::runtime_error { using std::runtime_error::runtime_error; };
 inline std::vector<int64_t> input_target() {
-    auto foreground = GetForegroundWindow(); if (!foreground) return {};
+    FocusProbe probe;
+    auto foreground = GetForegroundWindow();
+    probe.data["foreground_hwnd"] = reinterpret_cast<int64_t>(foreground);
+    if (!foreground) { probe.data["decision"] = "no_foreground"; return {}; }
     DWORD process = 0; auto thread = GetWindowThreadProcessId(foreground, &process);
+    probe.data["foreground_pid"] = process; probe.data["foreground_tid"] = thread;
     GUITHREADINFO info{sizeof(info)};
-    if (GetGUIThreadInfo(thread, &info) && info.hwndFocus) {
+    auto gui_ok = GetGUIThreadInfo(thread, &info); auto gui_error = gui_ok ? 0 : GetLastError();
+    probe.data["gui_ok"] = gui_ok != 0; probe.data["gui_error"] = gui_error;
+    probe.data["focus_hwnd"] = reinterpret_cast<int64_t>(info.hwndFocus);
+    probe.data["caret_hwnd"] = reinterpret_cast<int64_t>(info.hwndCaret);
+    probe.data["gui_flags"] = info.flags;
+    probe.data["caret_rect"] = {info.rcCaret.left, info.rcCaret.top, info.rcCaret.right, info.rcCaret.bottom};
+    if (gui_ok && info.hwndFocus) {
         wchar_t name[256]{}; GetClassNameW(info.hwndFocus, name, 256);
         std::wstring type(name); std::transform(type.begin(), type.end(), type.begin(), towlower);
-        if (info.hwndCaret || type == L"edit" || type.find(L"richedit") != std::wstring::npos || type.find(L".edit.") != std::wstring::npos)
+        probe.data["window_class"] = utf8(type);
+        if (info.hwndCaret || type == L"edit" || type.find(L"richedit") != std::wstring::npos || type.find(L".edit.") != std::wstring::npos) {
+            probe.data["decision"] = info.hwndCaret ? "accept_native_caret" : "accept_native_class";
             return {reinterpret_cast<int64_t>(foreground), reinterpret_cast<int64_t>(info.hwndFocus)};
+        }
     }
     const auto initialized = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    probe.data["com_init_hr"] = static_cast<long>(initialized);
     std::vector<int64_t> result;
     try {
+        probe.data["stage"] = "create_automation";
         auto automation = winrt::create_instance<IUIAutomation>(CLSID_CUIAutomation);
         winrt::com_ptr<IUIAutomationElement> element;
-        winrt::check_hresult(automation->GetFocusedElement(element.put()));
+        probe.checked("get_focused_element", automation->GetFocusedElement(element.put()));
         int pid = 0, type = 0; BOOL enabled = FALSE;
-        winrt::check_hresult(element->get_CurrentProcessId(&pid));
-        winrt::check_hresult(element->get_CurrentControlType(&type));
-        winrt::check_hresult(element->get_CurrentIsEnabled(&enabled));
-        if (pid != static_cast<int>(process) || !enabled || (type != UIA_EditControlTypeId && type != UIA_DocumentControlTypeId)) throw std::runtime_error("not editable");
-        winrt::com_ptr<IUIAutomationValuePattern> value;
-        element->GetCurrentPatternAs(UIA_ValuePatternId, __uuidof(IUIAutomationValuePattern), value.put_void());
-        if (value) {
-            BOOL read_only = TRUE; winrt::check_hresult(value->get_CurrentIsReadOnly(&read_only));
-            if (read_only) throw std::runtime_error("read only");
-        } else {
-            BSTR role{}; element->get_CurrentAriaRole(&role);
-            std::wstring aria(role ? role : L""); SysFreeString(role);
-            winrt::com_ptr<IUnknown> pattern; element->GetCurrentPattern(UIA_TextPatternId, pattern.put());
-            if ((aria != L"textbox" && aria != L"searchbox") || !pattern) throw std::runtime_error("not textbox");
+        probe.checked("process_id", element->get_CurrentProcessId(&pid)); probe.data["uia_pid"] = pid;
+        probe.checked("control_type", element->get_CurrentControlType(&type)); probe.data["control_type"] = type;
+        probe.checked("enabled", element->get_CurrentIsEnabled(&enabled)); probe.data["enabled"] = enabled != 0;
+        BSTR framework{}; probe.data["framework_hr"] = static_cast<long>(element->get_CurrentFrameworkId(&framework));
+        probe.data["framework"] = utf8(framework ? framework : L""); SysFreeString(framework);
+        BSTR control_class{}; probe.data["class_hr"] = static_cast<long>(element->get_CurrentClassName(&control_class));
+        probe.data["uia_class"] = utf8(control_class ? control_class : L""); SysFreeString(control_class);
+        BOOL focused{}, password{}, offscreen{};
+        probe.data["keyboard_focus_hr"] = static_cast<long>(element->get_CurrentHasKeyboardFocus(&focused)); probe.data["keyboard_focus"] = focused != 0;
+        probe.data["password_hr"] = static_cast<long>(element->get_CurrentIsPassword(&password)); probe.data["password"] = password != 0;
+        probe.data["offscreen_hr"] = static_cast<long>(element->get_CurrentIsOffscreen(&offscreen)); probe.data["offscreen"] = offscreen != 0;
+        if (pid != static_cast<int>(process) || !enabled || (type != UIA_EditControlTypeId && type != UIA_DocumentControlTypeId)) {
+            probe.data["decision"] = pid != static_cast<int>(process) ? "reject_pid_mismatch" : !enabled ? "reject_disabled" : "reject_control_type";
+            throw std::runtime_error("not editable");
         }
-        SAFEARRAY* id{}; winrt::check_hresult(element->GetRuntimeId(&id));
+        winrt::com_ptr<IUIAutomationValuePattern> value;
+        probe.data["stage"] = "value_pattern";
+        probe.data["value_pattern_hr"] = static_cast<long>(element->GetCurrentPatternAs(UIA_ValuePatternId, __uuidof(IUIAutomationValuePattern), value.put_void()));
+        probe.data["has_value_pattern"] = static_cast<bool>(value);
+        if (value) {
+            BOOL read_only = TRUE; probe.checked("read_only", value->get_CurrentIsReadOnly(&read_only));
+            probe.data["read_only"] = read_only != 0;
+            if (read_only) { probe.data["decision"] = "reject_read_only"; throw std::runtime_error("read only"); }
+        } else {
+            BSTR role{}; probe.data["aria_role_hr"] = static_cast<long>(element->get_CurrentAriaRole(&role));
+            std::wstring aria(role ? role : L""); SysFreeString(role);
+            probe.data["aria_role"] = utf8(aria);
+            winrt::com_ptr<IUnknown> pattern; probe.data["text_pattern_hr"] = static_cast<long>(element->GetCurrentPattern(UIA_TextPatternId, pattern.put()));
+            probe.data["has_text_pattern"] = static_cast<bool>(pattern);
+            if ((aria != L"textbox" && aria != L"searchbox") || !pattern) {
+                probe.data["decision"] = !pattern ? "reject_no_text_pattern" : "reject_aria_role"; throw std::runtime_error("not textbox");
+            }
+        }
+        SAFEARRAY* id{}; probe.checked("runtime_id", element->GetRuntimeId(&id));
         if (id) {
             LONG first{}, last{}; SafeArrayGetLBound(id, 1, &first); SafeArrayGetUBound(id, 1, &last);
             result = {reinterpret_cast<int64_t>(foreground), process};
             for (LONG i = first; i <= last; ++i) { int number{}; SafeArrayGetElement(id, &i, &number); result.push_back(number); }
             SafeArrayDestroy(id);
         }
-    } catch (...) { result.clear(); }
+        probe.data["decision"] = result.empty() ? "reject_no_runtime_id" : "accept_uia";
+        probe.data["target"] = result;
+    } catch (winrt::hresult_error const& error) {
+        probe.data["decision"] = "uia_error"; probe.data["error_hresult"] = static_cast<long>(error.code()); result.clear();
+    } catch (std::exception const&) { result.clear(); }
+      catch (...) { probe.data["decision"] = "unknown_exception"; result.clear(); }
     if (SUCCEEDED(initialized)) CoUninitialize();
     return result;
 }
@@ -179,24 +220,36 @@ inline void clipboard(std::wstring const& text) {
 inline void send_keys(std::initializer_list<std::pair<WORD, bool>> keys) {
     std::vector<INPUT> inputs;
     for (auto [key, up] : keys) { INPUT input{}; input.type = INPUT_KEYBOARD; input.ki.wVk = key; input.ki.dwFlags = up ? KEYEVENTF_KEYUP : 0; inputs.push_back(input); }
-    if (SendInput(static_cast<UINT>(inputs.size()), inputs.data(), sizeof(INPUT)) != inputs.size()) {
+    auto sent = SendInput(static_cast<UINT>(inputs.size()), inputs.data(), sizeof(INPUT));
+    auto error = sent != inputs.size() ? GetLastError() : 0;
+    FocusDiagnostics::event({{"event", "send_input"}, {"expected", inputs.size()}, {"sent", sent}, {"win32_error", error}});
+    if (sent != inputs.size()) {
         for (auto& input : inputs) input.ki.dwFlags = KEYEVENTF_KEYUP;
         SendInput(static_cast<UINT>(inputs.size()), inputs.data(), sizeof(INPUT));
         throw std::runtime_error("Windows 阻止了向当前光标输入文字");
     }
 }
 inline void paste_text_to(std::string const& text, HWND expected_window) {
+    FocusDiagnostics diagnostics("paste");
     auto target = require_input_target();
+    FocusDiagnostics::phase("expected_window_check");
     if (expected_window && target.front() != reinterpret_cast<int64_t>(expected_window)) throw NoInputFocus("测试输入窗口未获得焦点，未发送任何按键");
-    clipboard(wide(text));
-    if (require_input_target() != target) throw NoInputFocus("电脑端输入光标已变化，请重新点击输入框后再发送");
+    FocusDiagnostics::phase("clipboard"); clipboard(wide(text));
+    FocusDiagnostics::phase("focus_recheck");
+    if (require_input_target() != target) {
+        FocusDiagnostics::event({{"event", "reject_target_changed"}, {"original_target", target}});
+        throw NoInputFocus("电脑端输入光标已变化，请重新点击输入框后再发送");
+    }
+    FocusDiagnostics::phase("send_input");
     send_keys({{WORD(VK_CONTROL), false}, {WORD('V'), false}, {WORD('V'), true}, {WORD(VK_CONTROL), true}});
 }
 inline void paste_text(std::string const& text) { paste_text_to(text, nullptr); }
 inline void press_enter_to(HWND expected_window) {
+    FocusDiagnostics diagnostics("enter");
     auto target = require_input_target();
+    FocusDiagnostics::phase("expected_window_check");
     if (expected_window && target.front() != reinterpret_cast<int64_t>(expected_window)) throw NoInputFocus("测试输入窗口未获得焦点，未发送任何按键");
-    send_keys({{WORD(VK_RETURN), false}, {WORD(VK_RETURN), true}});
+    FocusDiagnostics::phase("send_input"); send_keys({{WORD(VK_RETURN), false}, {WORD(VK_RETURN), true}});
 }
 inline void press_enter() { press_enter_to(nullptr); }
 
@@ -319,7 +372,8 @@ class Bridge {
         });
         auto input_handler = [this](httplib::Request const& req, httplib::Response& res) {
             std::lock_guard guard(input_mutex_);
-            if (!accepting) { error(res, 423, "电脑已暂停接收"); return; }
+            FocusDiagnostics diagnostics(req.path == "/enter" ? "request_enter" : "request_send");
+            if (!accepting) { FocusDiagnostics::event({{"event", "http_result"}, {"status", 423}, {"reason", "paused"}}); error(res, 423, "电脑已暂停接收"); return; }
             try {
                 if (req.path == "/enter") { enter_(); status_("已按下回车"); }
                 else {
@@ -334,6 +388,7 @@ class Bridge {
               catch (json::exception const&) { error(res, 400, "文字内容无效"); }
               catch (std::invalid_argument const&) { error(res, 400, "文字内容无效"); }
               catch (...) { status_("电脑输入失败"); error(res, 500, "电脑输入失败"); }
+            FocusDiagnostics::event({{"event", "http_result"}, {"status", res.status}});
         };
         host.server.Post("/send", input_handler); host.server.Post("/enter", input_handler);
         host.server.set_error_handler([](auto const& req, auto& res) {
