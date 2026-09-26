@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:">
+<title>声桥</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div class="app">
+  <header class="titlebar">
+    <span class="title">声桥</span>
+    <button class="cap" id="minimize" aria-label="最小化" title="最小化"><svg width="9" height="9" viewBox="0 0 10 10"><path d="M1 5h8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
+    <button class="cap close" id="close" aria-label="关闭" title="关闭"><svg width="9" height="9" viewBox="0 0 10 10"><path d="M1 1l8 8M9 1L1 9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
+  </header>
+  <main class="content">
+    <section class="brand">
+      <div class="mark" aria-hidden="true">
+        <svg width="28" height="28" viewBox="0 0 512 512" fill="none" stroke-linecap="round"><rect x="108" y="132" width="116" height="248" rx="28" stroke-width="34"/><circle cx="166" cy="340" r="12"/><rect x="292" y="154" width="130" height="174" rx="20" stroke-width="34"/><path d="M327 378h60M357 328v50" stroke-width="34"/><path d="M231 221c25-25 43-25 68 0M231 256c25-25 43-25 68 0M231 291c25-25 43-25 68 0" stroke-width="22"/></svg>
+      </div>
+      <div class="names"><h1>声桥</h1><p>用手机说，在电脑上写</p></div>
+      <button class="round" id="theme" aria-label="切换深浅色主题" title="切换深浅色主题">
+        <svg class="moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M16 3A8 8 0 1 0 21 15A8 8 0 0 1 16 3"/></svg>
+        <svg class="sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5L19 19M5 19l1.5-1.5M17.5 6.5L19 5"/></svg>
+      </button>
+      <button class="round" id="settings" aria-label="设置" title="设置"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.6v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/></svg></button>
+    </section>
+    <section class="panel row" aria-label="手机连接">
+      <h2>手机连接</h2>
+      <span class="chip" id="chip"><span class="dot"></span><span id="chip-text">启动中</span></span>
+      <span class="address" id="address"></span>
+      <button class="tile accent" id="qr" aria-label="手机配对二维码" title="手机配对二维码" disabled><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM15 15h5v5M15 20h2"/></svg></button>
+    </section>
+    <section class="panel transfer" id="transfer">
+      <div class="row">
+        <h2><label for="text">电脑 → 手机</label></h2>
+        <span class="hint">发送到手机页面光标</span>
+        <button class="tile toggle" id="toggle" aria-label="展开电脑到手机" aria-expanded="false" title="展开或收起"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></button>
+      </div>
+      <div class="body">
+        <textarea id="text" placeholder="输入文字，发送到手机声桥页面的当前光标"></textarea>
+        <div class="actions">
+          <span class="hint" id="shortcut">Ctrl + Enter 发送 · Enter 换行</span>
+          <button class="primary" id="send" disabled>发送到手机</button>
+        </div>
+      </div>
+    </section>
+    <footer class="status"><span id="status">正在连接本机服务…</span><span id="count"></span></footer>
+  </main>
+</div>
+<script src="main.js"></script>
+</body>
+</html>
