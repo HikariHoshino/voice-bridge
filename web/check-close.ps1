@@ -1,6 +1,8 @@
 # Verifies the three close_action behaviours on a real, isolated instance (no daily config, port 18765).
-param([Parameter(Mandatory)][string]$Executable, [string]$Work = "$PSScriptRoot\test-output")
+param([Parameter(Mandatory)][string]$Executable, [string]$Work)
 $ErrorActionPreference = 'Stop'
+if (-not $Work) { $Work = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'test-output' }
+New-Item -ItemType Directory -Force $Work | Out-Null
 Add-Type @'
 using System; using System.Text; using System.Runtime.InteropServices;
 public static class W {
