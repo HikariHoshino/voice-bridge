@@ -71,7 +71,7 @@ inline fire_and_forget App::run_ui_tests() {
         check(find<Button>(L"QrButton").IsEnabled() && find<TextBlock>(L"StatusText").Text() == L"等待手机连接", "window is ready only after its real native service starts");
         check(find<Grid>(L"TransferContent").Visibility() == Visibility::Collapsed, "startup preserves collapsed transfer panel");
         check(std::abs(root.ActualHeight() - collapsed_height) < 2 && std::abs(find<Border>(L"TransferCard").ActualHeight() - find<Border>(L"ConnectionCard").ActualHeight()) < 2, "custom title bar preserves the checkpoint content height and equal collapsed cards");
-        check(!root.FindName(L"PauseButton") && bridge->accepting, "removed pause control leaves phone receiving enabled");
+        check(!root.FindName(L"PauseButton"), "pause control stays removed");
         auto presenter = window.AppWindow().Presenter().as<windowing::OverlappedPresenter>();
         check(!presenter.HasTitleBar() && caption_button(window, L"CaptionClose").ActualWidth() == 30, "title bar and caption buttons are drawn by Voice Bridge instead of the system");
         auto regions = Microsoft::UI::Input::InputNonClientPointerSource::GetForWindowId(window.AppWindow().Id()).GetRegionRects(Microsoft::UI::Input::NonClientRegionKind::Caption);

@@ -37,10 +37,7 @@ inline int run_tests(fs::path const& report) {
         auto result = post("/send", {{"text", text}});
         check(result && result->status == 200 && received == text, "phone text preserves CRLF LF whitespace tabs Markdown and non-BMP Unicode");
         check(config.settings()["character_count"] == character_count(text), "character count counts Unicode scalars instead of UTF-8 bytes");
-        bridge.accepting = false; received.clear();
-        result = post("/send", {{"text", "blocked"}}); check(result && result->status == 423 && received.empty(), "pause prevents text injection");
-        result = post("/enter", json::object()); check(result && result->status == 423 && enters == 0, "pause prevents remote Enter");
-        bridge.accepting = true; focus = false;
+        received.clear(); focus = false;
         result = post("/send", {{"text", "blocked"}}); check(result && result->status == 409 && received.empty(), "missing input focus rejects text without counting or injecting");
         result = post("/enter", json::object()); check(result && result->status == 409 && enters == 0, "missing input focus rejects Enter");
         focus = true; result = post("/enter", json::object()); check(result && result->status == 200 && enters == 1, "confirmed Enter dispatches once");

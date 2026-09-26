@@ -384,7 +384,6 @@ class Bridge {
         auto input_handler = [this](httplib::Request const& req, httplib::Response& res) {
             std::lock_guard guard(input_mutex_);
             FocusDiagnostics diagnostics(req.path == "/enter" ? "request_enter" : "request_send");
-            if (!accepting) { FocusDiagnostics::event({{"event", "http_result"}, {"status", 423}, {"reason", "paused"}}); error(res, 423, "电脑已暂停接收"); return; }
             try {
                 if (req.path == "/enter") { enter_(); status_("已按下回车"); }
                 else {
@@ -413,7 +412,6 @@ class Bridge {
         if (host->thread.joinable()) host->thread.join(); host.reset();
     }
 public:
-    std::atomic<bool> accepting{true};
     std::string displayed_ip, bound_ip;
     int port = 8765;
     Bridge(Config& config, fs::path resources, std::function<void(std::string const&)> input = paste_text,
