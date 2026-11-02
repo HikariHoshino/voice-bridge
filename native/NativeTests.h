@@ -18,7 +18,12 @@ inline int run_tests(fs::path const& report) {
         check(!FocusDiagnostics::write(diagnostic_record, diagnostic_path / "not-a-directory.jsonl"), "unwritable diagnostic destination returns failure without throwing into input handling");
         check(chromium_host_focus(L"chrome_widgetwin_0", UIA_PaneControlTypeId, true) == ChromiumHost::accept, "CEF apps without an accessibility tree (HrASMain) still accept phone text when their window owns keyboard focus");
         check(chromium_host_focus(L"chrome_widgetwin_1", UIA_PaneControlTypeId, false) == ChromiumHost::pending, "an Electron window whose accessibility tree is still being built (claude.exe first send) is waited for instead of rejected");
-        check(chromium_host_focus(L"chrome_widgetwin_1", UIA_ButtonControlTypeId, true) == ChromiumHost::none && chromium_host_focus(L"inputsitewindowclass", UIA_PaneControlTypeId, true) == ChromiumHost::none, "buttons and non-Chromium panes keep the strict input check");
+        check(chromium_host_focus(L"chrome_widgetwin_1", UIA_WindowControlTypeId, true) == ChromiumHost::accept, "an Electron window that exposes only its top-level window reaches the elevation check, so an elevated claude.exe gets the admin message instead of a false no-caret error");
+        check(chromium_host_focus(L"qt51514qwindowicon", UIA_WindowControlTypeId, true) == ChromiumHost::accept, "self-drawn Qt apps without an editor element (Weixin.exe) still accept phone text when their window owns keyboard focus");
+        check(chromium_host_focus(L"qt51514qwindowicon", UIA_WindowControlTypeId, false) == ChromiumHost::none && chromium_host_focus(L"glfw30", UIA_WindowControlTypeId, true) == ChromiumHost::none, "unfocused Qt windows and other frameworks keep the strict input check");
+        check(chromium_host_focus(L"chrome_widgetwin_1", UIA_ButtonControlTypeId, true) == ChromiumHost::none &&chromium_host_focus(L"inputsitewindowclass", UIA_PaneControlTypeId, true) == ChromiumHost::none, "buttons and non-Chromium panes keep the strict input check");
+        check(chromium_key_focus(L"chrome_widgetwin_1", true), "Enter reaches a focused card or button inside Chromium (claude.exe question card), which has no text caret");
+        check(!chromium_key_focus(L"chrome_widgetwin_1", false) && !chromium_key_focus(L"syslistview32", true), "Enter stays blocked for unfocused Chromium windows and other programs, so it cannot open a selected file in Explorer");
         auto test_config = report.parent_path() / ("config-" + random_token(8) + ".json");
         Config config(test_config);
         check(config.settings() == defaults(), "missing configuration uses the original defaults");
@@ -28,8 +33,8 @@ inline int run_tests(fs::path const& report) {
         check(reloaded.token() == token, "pairing survives restart");
         check(reloaded.settings()["theme"] == "dark" && reloaded.all()["custom_key"] == "preserved", "settings preserve unknown keys");
         check(reloaded.settings()["character_count"] == 0 && reloaded.settings()["confirm_send"] == false, "invalid typed settings cannot leak into behavior");
-        std::string received; int enters = 0; bool focus = true;
-        Bridge bridge(config, executable_dir(), [&](auto const& text) { if (!focus) throw NoInputFocus("no focus"); received = text; }, [&] { if (!focus) throw NoInputFocus("no focus"); ++enters; });
+        std::string received; int enters = 0, ctrl_enters = 0; bool focus = true;
+        Bridge bridge(config, executable_dir(), [&](auto const& text) { if (!focus) throw NoInputFocus("no focus"); received = text; }, [&] { if (!focus) throw NoInputFocus("no focus"); ++enters; }, [](auto const&) {}, [&] { if (!focus) throw NoInputFocus("no focus"); ++ctrl_enters; });
         bridge.displayed_ip = "127.0.0.1"; bridge.bind("127.0.0.1", 0);
         httplib::Client client("127.0.0.1", bridge.port); client.set_read_timeout(25);
         auto path = [&](std::string const& route) { return route + "?token=" + token; };
@@ -45,7 +50,9 @@ inline int run_tests(fs::path const& report) {
         received.clear(); focus = false;
         result = post("/send", {{"text", "blocked"}}); check(result && result->status == 409 && received.empty(), "missing input focus rejects text without counting or injecting");
         result = post("/enter", json::object()); check(result && result->status == 409 && enters == 0, "missing input focus rejects Enter");
+        result = post("/ctrl-enter", json::object()); check(result && result->status == 409 && ctrl_enters == 0, "missing input focus rejects Ctrl+Enter");
         focus = true; result = post("/enter", json::object()); check(result && result->status == 200 && enters == 1, "confirmed Enter dispatches once");
+        result = post("/ctrl-enter", json::object()); check(result && result->status == 200 && ctrl_enters == 1 && enters == 1, "Ctrl+Enter is its own action, because question cards ignore plain Enter");
         for (auto const& invalid : std::vector<json>{json::array(), nullptr, {{"text", 1}}, {{"text", ""}}}) {
             result = post("/send", invalid); check(result && result->status == 400, "malformed text is rejected without crashing the service");
         }

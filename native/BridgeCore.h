@@ -115,12 +115,20 @@ struct NoInputFocus : std::runtime_error { using std::runtime_error::runtime_err
 // Chromium/Electron/CEF windows report only their host pane when their accessibility
 // tree is not available. An unfocused pane means the tree is still being built after
 // the first UIA query; a focused pane means the app exposes no tree at all.
+// A focused top-level window means the same for Chromium (an elevated claude.exe answers a normal
+// process this way; the elevation check then refuses it) and for self-drawn Qt apps (Weixin.exe).
 enum class ChromiumHost { none, accept, pending };
 inline ChromiumHost chromium_host_focus(std::wstring const& window_class, int control_type, bool keyboard_focus) {
-    if (window_class.rfind(L"chrome_widgetwin", 0) != 0 || control_type != UIA_PaneControlTypeId) return ChromiumHost::none;
+    bool chromium = window_class.rfind(L"chrome_widgetwin", 0) == 0;
+    if (control_type == UIA_WindowControlTypeId && keyboard_focus && (chromium || window_class.rfind(L"qt", 0) == 0)) return ChromiumHost::accept;
+    if (!chromium || control_type != UIA_PaneControlTypeId) return ChromiumHost::none;
     return keyboard_focus ? ChromiumHost::accept : ChromiumHost::pending;
 }
-inline std::vector<int64_t> input_target(bool* pending = nullptr) {
+// Enter and Ctrl+Enter also answer focused cards and buttons inside a Chromium window, which take no text.
+inline bool chromium_key_focus(std::wstring const& window_class, bool keyboard_focus) {
+    return keyboard_focus && window_class.rfind(L"chrome_widgetwin", 0) == 0;
+}
+inline std::vector<int64_t> input_target(bool* pending = nullptr, bool key_press = false) {
     FocusProbe probe;
     auto foreground = GetForegroundWindow();
     probe.data["foreground_hwnd"] = reinterpret_cast<int64_t>(foreground);
@@ -174,6 +182,12 @@ inline std::vector<int64_t> input_target(bool* pending = nullptr) {
                 probe.data["decision"] = "pending_chromium_accessibility"; throw std::runtime_error("accessibility pending");
             case ChromiumHost::none: break;
         }
+        if (key_press && pid == static_cast<int>(process) && enabled && chromium_key_focus(focus_class, focused != 0)) {
+            result = {reinterpret_cast<int64_t>(foreground), process, reinterpret_cast<int64_t>(info.hwndFocus)};
+            probe.data["decision"] = "accept_chromium_key_press"; probe.data["target"] = result;
+            if (SUCCEEDED(initialized)) CoUninitialize();
+            return result;
+        }
         if (pid != static_cast<int>(process) || !enabled || (type != UIA_EditControlTypeId && type != UIA_DocumentControlTypeId)) {
             probe.data["decision"] = pid != static_cast<int>(process) ? "reject_pid_mismatch" : !enabled ? "reject_disabled" : "reject_control_type";
             throw std::runtime_error("not editable");
@@ -212,11 +226,11 @@ inline std::vector<int64_t> input_target(bool* pending = nullptr) {
     if (SUCCEEDED(initialized)) CoUninitialize();
     return result;
 }
-inline std::vector<int64_t> require_input_target() {
+inline std::vector<int64_t> require_input_target(bool key_press = false) {
     // Only a Chromium tree that is still being built is worth waiting for (up to 1s).
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
     for (;;) {
-        bool pending = false; auto target = input_target(&pending);
+        bool pending = false; auto target = input_target(&pending, key_press);
         if (!target.empty()) return target;
         if (!pending || std::chrono::steady_clock::now() >= deadline) break;
         Sleep(50);
@@ -269,7 +283,7 @@ inline bool elevated_process(DWORD pid) {
             TOKEN_ELEVATION elevation{}; DWORD size{};
             elevated = GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &size) && elevation.TokenIsElevated;
             CloseHandle(token);
-        }
+        } else elevated = GetLastError() == ERROR_ACCESS_DENIED;   // an elevated packaged app (claude.exe) denies its token to normal processes
         CloseHandle(process);
     }
     return elevated;
@@ -299,18 +313,21 @@ inline void paste_text_to(std::string const& text, HWND expected_window) {
     send_keys({{WORD(VK_CONTROL), false}, {WORD('V'), false}, {WORD('V'), true}, {WORD(VK_CONTROL), true}});
 }
 inline void paste_text(std::string const& text) { paste_text_to(text, nullptr); }
-inline void press_enter_to(HWND expected_window) {
-    FocusDiagnostics diagnostics("enter");
-    auto target = require_input_target();
+inline void press_enter_to(HWND expected_window, bool ctrl = false) {
+    FocusDiagnostics diagnostics(ctrl ? "ctrl_enter" : "enter");
+    auto target = require_input_target(true);
     FocusDiagnostics::phase("expected_window_check");
     if (expected_window && target.front() != reinterpret_cast<int64_t>(expected_window)) throw NoInputFocus("测试输入窗口未获得焦点，未发送任何按键");
     if (input_blocked_by_elevation(target.front())) {
         FocusDiagnostics::event({{"event", "reject_elevated_target"}});
         throw NoInputFocus("目标程序以管理员身份运行，Windows 阻止了远程回车，请在电脑上按回车");
     }
-    FocusDiagnostics::phase("send_input"); send_keys({{WORD(VK_RETURN), false}, {WORD(VK_RETURN), true}});
+    FocusDiagnostics::phase("send_input");
+    if (ctrl) send_keys({{WORD(VK_CONTROL), false}, {WORD(VK_RETURN), false}, {WORD(VK_RETURN), true}, {WORD(VK_CONTROL), true}});
+    else send_keys({{WORD(VK_RETURN), false}, {WORD(VK_RETURN), true}});
 }
 inline void press_enter() { press_enter_to(nullptr); }
+inline void press_ctrl_enter() { press_enter_to(nullptr, true); }
 
 struct Address { std::string ip; bool gateway; };
 inline std::vector<Address> addresses() {
@@ -363,7 +380,7 @@ class Bridge {
     std::atomic<ULONGLONG> last_seen_{0};
     std::string token_, session_ = random_token(8), page_;
     std::function<void(std::string const&)> input_, status_;
-    std::function<void()> enter_;
+    std::function<void()> enter_, ctrl_enter_;
     bool authorized(httplib::Request const& request) {
         auto supplied = request.get_param_value("token"); std::lock_guard lock(mutex_);
         size_t difference = supplied.size() ^ token_.size();
@@ -437,9 +454,10 @@ class Bridge {
         });
         auto input_handler = [this](httplib::Request const& req, httplib::Response& res) {
             std::lock_guard guard(input_mutex_);
-            FocusDiagnostics diagnostics(req.path == "/enter" ? "request_enter" : "request_send");
+            FocusDiagnostics diagnostics(req.path == "/enter" ? "request_enter" : req.path == "/ctrl-enter" ? "request_ctrl_enter" : "request_send");
             try {
                 if (req.path == "/enter") { enter_(); status_("已按下回车"); }
+                else if (req.path == "/ctrl-enter") { ctrl_enter_(); status_("已按下 Ctrl+回车"); }
                 else {
                     auto body = payload(req, 100000);
                     if (!body.contains("text") || !body["text"].is_string() || body["text"].get<std::string>().empty()) throw std::invalid_argument("text");
@@ -454,7 +472,7 @@ class Bridge {
               catch (...) { status_("电脑输入失败"); error(res, 500, "电脑输入失败"); }
             FocusDiagnostics::event({{"event", "http_result"}, {"status", res.status}});
         };
-        host.server.Post("/send", input_handler); host.server.Post("/enter", input_handler);
+        host.server.Post("/send", input_handler); host.server.Post("/enter", input_handler); host.server.Post("/ctrl-enter", input_handler);
         host.server.set_error_handler([](auto const& req, auto& res) {
             if (res.status == 404) error(res, req.method == "POST" ? 403 : 404, req.method == "POST" ? "配对链接无效" : "页面不存在");
             if (res.status == 413) error(res, 400, "内容为空或过长");
@@ -471,8 +489,9 @@ public:
     bool phone_active(ULONGLONG window_ms = 30000) const { auto seen = last_seen_.load(); return seen && GetTickCount64() - seen < window_ms; }
     int port = 8765;
     Bridge(Config& config, fs::path resources, std::function<void(std::string const&)> input = paste_text,
-        std::function<void()> enter = press_enter, std::function<void(std::string const&)> status = [](auto const&) {})
-        : config_(config), token_(config.token()), input_(std::move(input)), status_(std::move(status)), enter_(std::move(enter)) {
+        std::function<void()> enter = press_enter, std::function<void(std::string const&)> status = [](auto const&) {},
+        std::function<void()> ctrl_enter = press_ctrl_enter)
+        : config_(config), token_(config.token()), input_(std::move(input)), status_(std::move(status)), enter_(std::move(enter)), ctrl_enter_(std::move(ctrl_enter)) {
         page_ = read_file(resources / "mobile.html");
         const std::string marker = "{{APP_ICON_BASE64}}";
         auto image = base64(read_file(resources / "assets" / "voice-bridge.png"));

@@ -66,3 +66,17 @@
 - 日志显示火绒应用商店（HrASMain.exe）以管理员身份运行。普通权限的声桥向它发送 Ctrl+V 时，Windows UIPI 静默丢弃按键，而 SendInput 仍返回 4/4 成功，导致界面显示"已输入"但文字未到。
 - 现改为：目标进程已提权而声桥未提权时，文字仍写入剪贴板，但返回 409 并提示在电脑上手动 Ctrl+V；远程回车同样拒绝并说明原因。
 - 交付目录：`outputs/VoiceBridge-Elevated-20260926/`，EXE SHA-256：`1FE7EF748A6179DCA24ED070C545F2653B3996547A795CD666234C159D60DE94`。协议测试 39/39；提权判断未做自动测试，需在火绒应用商店上实测。
+
+## 2026-11-02 提权的打包程序与只暴露顶层窗口的程序
+
+- 日志显示 claude.exe 在 2026-11-02 共 36 次焦点元素为顶层 Window（Win32），且 token_error=5；此前 1200 次均可读取权限且未提权。实测当次 claude.exe 由已提权的 Everything.exe 启动（High 完整性），声桥为 Medium。UIPI 使 UIA 只能看到外壳，SendInput 返回 4/4 但按键被丢弃。
+- 现改为：读取目标令牌被拒（ERROR_ACCESS_DENIED）时按已提权处理，文字写入剪贴板并提示手动 Ctrl+V，不再显示已发送。
+- Chromium 或 Qt 窗口的顶层 Window 持有键盘焦点时放行。Weixin.exe（未提权，35 次被拒）因此可通过校验，但无法确认焦点确实在输入框内；其他框架和无键盘焦点的 Qt 窗口仍按严格规则判断。
+- 交付目录：`outputs/VoiceBridge-ElevationFix-20261102/`，EXE SHA-256：`AC9FC312D0960B164DE9DEE857CB0962393F88C14DDB5C27DE8B357479929223`，基于 HEAD 4724370 加本次修改构建，不含工作区未提交的 web 动画改动。协议测试 44/44；令牌被拒分支无自动测试，claude.exe 与 Weixin.exe 未做实机验证。
+
+## 2026-11-02 手机回车与 Ctrl+回车
+
+- 日志显示 claude.exe 选项卡片获得焦点时（Group，epitaxy-approval-card），20 次手机回车全部被输入框校验拒绝，未发出按键。
+- 现改为：回车和 Ctrl+回车在持有键盘焦点的 Chromium 窗口内不要求可编辑控件；其他程序仍按严格规则判断。新增 `/ctrl-enter` 接口和手机页“Ctrl+回车”按钮，沿用回车二次确认设置。
+- 交付目录：`outputs/VoiceBridge-CtrlEnter-20261102/`，EXE SHA-256：`B3D1AE86C1F2F4CAE4E3B6726D207034C9CB95A85187A53C0818AC45C6716B23`，基于 HEAD 4724370 加本次修改构建，不含工作区未提交的 web 动画改动。协议测试 48/48；手机页 360px 宽度排版和确认状态已渲染检查。
+- 实机：焦点在 claude.exe 代码块时 `/ctrl-enter` 判定为 accept_chromium_key_press，SendInput 4/4，但该位置不属于选项卡片，卡片无反应。用户随后在选项卡片上用手机 Ctrl+回车实测提交成功。

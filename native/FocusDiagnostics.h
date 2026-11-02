@@ -32,7 +32,7 @@ public:
         SetLastError(saved); return success;
     }
     explicit FocusDiagnostics(char const* action) : data_({
-        {"schema", 1}, {"build", "ChromiumFocus-20260926"},
+        {"schema", 1}, {"build", "CtrlEnter-20261102"},
         {"operation_id", ++sequence_}, {"pid", GetCurrentProcessId()}, {"tid", GetCurrentThreadId()},
         {"started_unix_ms", std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()},
         {"action", action}, {"phase", "initial_focus"}, {"events", json::array()}}) {

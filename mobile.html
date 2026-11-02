@@ -117,13 +117,13 @@
     textarea::placeholder { color: var(--muted); }
     .hint { margin: 0; padding: 0 2px; color: var(--muted); font-size: 13px; line-height: 1.5; }
     .action-panel { display: flex; flex-direction: column; gap: 12px; padding-top: 4px; }
-    .primary-actions { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+    .primary-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
     .primary-button {
       min-height: 54px; padding: 0 12px; border-radius: 27px; font-size: 16px; font-weight: 600; box-shadow: var(--raised-sm);
     }
     #send { color: #FFFFFF; background: var(--accent); }
-    #enter { color: var(--ink); }
-    #send.confirming, #enter.confirming { color: #FFFFFF; background: var(--confirm); }
+    #enter, #ctrl-enter { color: var(--ink); }
+    #send.confirming, #enter.confirming, #ctrl-enter.confirming { color: #FFFFFF; background: var(--confirm); }
     .secondary-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
     .pill-button {
       display: flex; align-items: center; justify-content: center; gap: 6px; min-height: 50px; padding: 0 8px;
@@ -211,6 +211,9 @@
           <button class="primary-button" id="enter" type="button" aria-pressed="false">
             <span id="enter-label">按下回车</span>
           </button>
+          <button class="primary-button" id="ctrl-enter" type="button" aria-pressed="false">
+            <span id="ctrl-enter-label">Ctrl+回车</span>
+          </button>
         </div>
 
         <div class="secondary-actions">
@@ -246,6 +249,13 @@
     const sendLabel = document.getElementById('send-label');
     const enter = document.getElementById('enter');
     const enterLabel = document.getElementById('enter-label');
+    const keyActions = [
+      { button: enter, label: enterLabel, text: '按下回车', key: '回车', path: '/enter' },
+      {
+        button: document.getElementById('ctrl-enter'), label: document.getElementById('ctrl-enter-label'),
+        text: 'Ctrl+回车', key: 'Ctrl+回车', path: '/ctrl-enter'
+      }
+    ];
     const undo = document.getElementById('undo');
     const message = document.getElementById('message');
     const status = document.getElementById('status');
@@ -375,9 +385,11 @@
     function resetEnterConfirmation() {
       clearTimeout(enterConfirmationTimer);
       enterConfirmationTimer = null;
-      enter.classList.remove('confirming');
-      enter.setAttribute('aria-pressed', 'false');
-      enterLabel.textContent = '按下回车';
+      keyActions.forEach(({ button, label, text }) => {
+        button.classList.remove('confirming');
+        button.setAttribute('aria-pressed', 'false');
+        label.textContent = text;
+      });
     }
 
     document.getElementById('clear').addEventListener('click', () => {
@@ -482,34 +494,35 @@
       }
     });
 
-    enter.addEventListener('click', async () => {
+    keyActions.forEach(({ button, label, key, path }) => button.addEventListener('click', async () => {
       resetSendConfirmation();
-      if (confirmationSettings.confirm_enter && !enter.classList.contains('confirming')) {
-        enter.classList.add('confirming');
-        enter.setAttribute('aria-pressed', 'true');
-        enterLabel.textContent = '确认吗？';
-        message.textContent = '再次点击才会在电脑按下回车';
+      if (confirmationSettings.confirm_enter && !button.classList.contains('confirming')) {
+        resetEnterConfirmation();
+        button.classList.add('confirming');
+        button.setAttribute('aria-pressed', 'true');
+        label.textContent = '确认吗？';
+        message.textContent = '再次点击才会在电脑按下' + key;
         enterConfirmationTimer = setTimeout(resetEnterConfirmation, 4500);
         return;
       }
 
       clearTimeout(enterConfirmationTimer);
-      enter.disabled = true;
-      message.textContent = '正在按下回车……';
+      button.disabled = true;
+      message.textContent = '正在按下' + key + '……';
       try {
-        const response = await fetch('/enter?token=' + encodeURIComponent(token), {
+        const response = await fetch(path + '?token=' + encodeURIComponent(token), {
           method: 'POST'
         });
         const result = await response.json();
-        if (!response.ok) throw new Error(result.error || '回车发送失败');
-        message.textContent = '已在电脑按下回车';
+        if (!response.ok) throw new Error(result.error || key + '发送失败');
+        message.textContent = '已在电脑按下' + key;
       } catch (error) {
         message.textContent = error.message;
       } finally {
-        enter.disabled = false;
+        button.disabled = false;
         resetEnterConfirmation();
       }
-    });
+    }));
 
     function insertAtCursor(value) {
       const start = text.selectionStart ?? text.value.length;
