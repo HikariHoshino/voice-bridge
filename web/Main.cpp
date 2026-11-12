@@ -192,9 +192,6 @@ void handle_web_message(Shell* s, vb::json const& message) {
             // The minimum only applies once the animation lands; applying it first would snap the window.
             s->final_min_height = min; s->min_height = std::min(min, client.bottom / scale(s->hwnd));
             s->resize_seconds = message.value("duration", 240) / 1000.0; s->resize_start = now_ticks();
-            // Chromium presents about two refreshes after the page animates; when shrinking, let the edge start that
-            // much later so it never cuts into content (the status bar) that has not moved up yet.
-            if (s->resize_to < s->resize_from) s->resize_start += 2 * refresh_ticks();
             if (!s->resizing) PostMessageW(s->hwnd, WM_RUN_RESIZE, 0, 0);
         } else { s->min_height = min; set_client_height(s->hwnd, s->resize_to); }
         if (s->page != "main" && !IsWindowVisible(s->hwnd)) {
@@ -397,6 +394,10 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
             auto t = std::clamp((now_ticks() - s->resize_start) / static_cast<double>(frequency.QuadPart) / s->resize_seconds, 0.0, 1.0);
             set_client_height(hwnd, static_cast<int>(std::lround(s->resize_from + (s->resize_to - s->resize_from) * ease(t))));
             if (t >= 1) break;
+            // The page sizes itself from this instead of running its own animation. Its frame reaches the screen
+            // about two refreshes later, so send where the edge will be by then.
+            auto ahead = std::min(1.0, t + 2.0 * period / frequency.QuadPart / s->resize_seconds);
+            post(s, {{"type", "edge"}, {"h", (s->resize_from + (s->resize_to - s->resize_from) * ease(ahead)) / scale(hwnd)}});
             DwmFlush();
             do {
                 MSG msg{};

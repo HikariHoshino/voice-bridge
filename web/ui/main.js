@@ -17,24 +17,24 @@ function applyLayout(animate) {
 }
 
 // During the animation Main.cpp keeps the WebView at the larger of the two sizes and moves only the window
-// edge. The page animates its own height with the same curve and duration, so the content tracks the edge
-// without the WebView being resized every frame (which tore). Main.cpp posts "resized" when the edge lands.
+// edge. The page takes its height from the "edge" messages Main.cpp sends every step, so the content stays on
+// the edge without the WebView being resized every frame (which tore). Main.cpp posts "resized" when it lands.
 const RESIZE_MS = 240;
-let settleTimer = 0, heightAnimation = null;
+let settleTimer = 0, following = false;
 
 function settleTransfer() {
   clearTimeout(settleTimer);
   const transfer = $('transfer');
   transfer.classList.remove('animating', 'closing');
   transfer.classList.toggle('open', state.expanded);
-  if (heightAnimation) { heightAnimation.cancel(); heightAnimation = null; }
+  following = false; document.querySelector('.app').style.height = '';
 }
 
 function toggleTransfer() {
   const transfer = $('transfer');
   clearTimeout(settleTimer);
-  const windowFrom = heightAnimation ? document.querySelector('.app').getBoundingClientRect().height : window.innerHeight;
-  if (heightAnimation) { heightAnimation.cancel(); heightAnimation = null; }
+  const app = document.querySelector('.app');
+  const windowFrom = following ? app.getBoundingClientRect().height : window.innerHeight;
   if (state.expanded) state.expandedHeight = windowFrom;
   state.expanded = !state.expanded;
 
@@ -50,8 +50,7 @@ function toggleTransfer() {
   $('toggle').setAttribute('aria-expanded', String(state.expanded));
   $('toggle').setAttribute('aria-label', state.expanded ? '收起电脑到手机' : '展开电脑到手机');
   send('layout', { height: windowTo, min: state.expanded ? openMin : collapsed, animate: true, duration: RESIZE_MS });
-  heightAnimation = document.querySelector('.app').animate([{ height: `${windowFrom}px` }, { height: `${windowTo}px` }],
-    { duration: RESIZE_MS, easing: 'cubic-bezier(.4,0,.2,1)', fill: 'forwards' });
+  following = true; app.style.height = `${windowFrom}px`;
   if (state.expanded) setTimeout(() => $('text').focus(), RESIZE_MS);
   settleTimer = setTimeout(settleTransfer, RESIZE_MS + 500);   // fallback if "resized" never arrives
 }
@@ -99,7 +98,8 @@ Object.assign(handlers, {
     setConnected(state.connected);
   },
   phone(m) { setConnected(!!m.connected); },
-  resized() { if (heightAnimation) settleTransfer(); },
+  edge(m) { if (following) document.querySelector('.app').style.height = `${m.h}px`; },
+  resized() { if (following) settleTransfer(); },
   demo() {   // --demo-toggle, verification only: toggle and report the page height every frame
     toggleTransfer();
     const app = document.querySelector('.app'), until = performance.now() + RESIZE_MS + 200;
