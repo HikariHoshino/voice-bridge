@@ -171,7 +171,9 @@ inline std::vector<int64_t> input_target(bool* pending = nullptr, bool key_press
         probe.data["keyboard_focus_hr"] = static_cast<long>(element->get_CurrentHasKeyboardFocus(&focused)); probe.data["keyboard_focus"] = focused != 0;
         probe.data["password_hr"] = static_cast<long>(element->get_CurrentIsPassword(&password)); probe.data["password"] = password != 0;
         probe.data["offscreen_hr"] = static_cast<long>(element->get_CurrentIsOffscreen(&offscreen)); probe.data["offscreen"] = offscreen != 0;
-        if (pid == static_cast<int>(process) && enabled) switch (chromium_host_focus(focus_class, type, focused != 0)) {
+        // Our own page lives in a WebView2 child process, so its elements report that process, not the window's.
+        bool same_app = pid == static_cast<int>(process) || process == GetCurrentProcessId();
+        if (same_app && enabled) switch (chromium_host_focus(focus_class, type, focused != 0)) {
             case ChromiumHost::accept:
                 result = {reinterpret_cast<int64_t>(foreground), process, reinterpret_cast<int64_t>(info.hwndFocus)};
                 probe.data["decision"] = "accept_chromium_no_accessibility"; probe.data["target"] = result;
@@ -182,14 +184,14 @@ inline std::vector<int64_t> input_target(bool* pending = nullptr, bool key_press
                 probe.data["decision"] = "pending_chromium_accessibility"; throw std::runtime_error("accessibility pending");
             case ChromiumHost::none: break;
         }
-        if (key_press && pid == static_cast<int>(process) && enabled && chromium_key_focus(focus_class, focused != 0)) {
+        if (key_press && same_app && enabled && chromium_key_focus(focus_class, focused != 0)) {
             result = {reinterpret_cast<int64_t>(foreground), process, reinterpret_cast<int64_t>(info.hwndFocus)};
             probe.data["decision"] = "accept_chromium_key_press"; probe.data["target"] = result;
             if (SUCCEEDED(initialized)) CoUninitialize();
             return result;
         }
-        if (pid != static_cast<int>(process) || !enabled || (type != UIA_EditControlTypeId && type != UIA_DocumentControlTypeId)) {
-            probe.data["decision"] = pid != static_cast<int>(process) ? "reject_pid_mismatch" : !enabled ? "reject_disabled" : "reject_control_type";
+        if (!same_app || !enabled || (type != UIA_EditControlTypeId && type != UIA_DocumentControlTypeId)) {
+            probe.data["decision"] = !same_app ? "reject_pid_mismatch" : !enabled ? "reject_disabled" : "reject_control_type";
             throw std::runtime_error("not editable");
         }
         winrt::com_ptr<IUIAutomationValuePattern> value;

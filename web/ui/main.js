@@ -16,15 +16,25 @@ function applyLayout(animate) {
   send('layout', { height, min, animate });
 }
 
-// The window edge (animated per vsync by Main.cpp) drives the layout: while animating, the panel simply
-// fills whatever height the window has, so the content grows and shrinks exactly with the edge.
+// During the animation Main.cpp keeps the WebView at the larger of the two sizes and moves only the window
+// edge. The page animates its own height with the same curve and duration, so the content tracks the edge
+// without the WebView being resized every frame (which tore). Main.cpp posts "resized" when the edge lands.
 const RESIZE_MS = 240;
-let settleTimer = 0;
+let settleTimer = 0, heightAnimation = null;
+
+function settleTransfer() {
+  clearTimeout(settleTimer);
+  const transfer = $('transfer');
+  transfer.classList.remove('animating', 'closing');
+  transfer.classList.toggle('open', state.expanded);
+  if (heightAnimation) { heightAnimation.cancel(); heightAnimation = null; }
+}
 
 function toggleTransfer() {
   const transfer = $('transfer');
   clearTimeout(settleTimer);
-  const windowFrom = window.innerHeight;
+  const windowFrom = heightAnimation ? document.querySelector('.app').getBoundingClientRect().height : window.innerHeight;
+  if (heightAnimation) { heightAnimation.cancel(); heightAnimation = null; }
   if (state.expanded) state.expandedHeight = windowFrom;
   state.expanded = !state.expanded;
 
@@ -40,12 +50,10 @@ function toggleTransfer() {
   $('toggle').setAttribute('aria-expanded', String(state.expanded));
   $('toggle').setAttribute('aria-label', state.expanded ? '收起电脑到手机' : '展开电脑到手机');
   send('layout', { height: windowTo, min: state.expanded ? openMin : collapsed, animate: true, duration: RESIZE_MS });
-
-  settleTimer = setTimeout(() => {
-    transfer.classList.remove('animating', 'closing');
-    transfer.classList.toggle('open', state.expanded);
-    if (state.expanded) $('text').focus();
-  }, RESIZE_MS + 40);
+  heightAnimation = document.querySelector('.app').animate([{ height: `${windowFrom}px` }, { height: `${windowTo}px` }],
+    { duration: RESIZE_MS, easing: 'cubic-bezier(.4,0,.2,1)', fill: 'forwards' });
+  if (state.expanded) setTimeout(() => $('text').focus(), RESIZE_MS);
+  settleTimer = setTimeout(settleTransfer, RESIZE_MS + 500);   // fallback if "resized" never arrives
 }
 
 function setStatus(text) {
@@ -91,6 +99,13 @@ Object.assign(handlers, {
     setConnected(state.connected);
   },
   phone(m) { setConnected(!!m.connected); },
+  resized() { if (heightAnimation) settleTransfer(); },
+  demo() {   // --demo-toggle, verification only: toggle and report the page height every frame
+    toggleTransfer();
+    const app = document.querySelector('.app'), until = performance.now() + RESIZE_MS + 200;
+    const tick = () => { send('trace', { h: app.getBoundingClientRect().height }); if (performance.now() < until) requestAnimationFrame(tick); };
+    requestAnimationFrame(tick);
+  },
   status(m) { setStatus(m.text); setCount(m.count); },
   sent() { $('text').value = ''; },
   shot(m) {

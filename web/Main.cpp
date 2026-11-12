@@ -7,6 +7,7 @@
 #include <windowsx.h>
 #include <shlwapi.h>
 #include <dwmapi.h>
+#include <timeapi.h>
 #include <wrl.h>
 #include <WebView2.h>
 #include <map>
@@ -20,7 +21,7 @@ constexpr UINT WM_ACTIVATE_EXISTING = WM_APP + 2;
 constexpr UINT WM_TRAY = WM_APP + 3;
 constexpr UINT WM_SHELL_DESTROY = WM_APP + 4;   // deferred: never destroy a WebView inside its own event
 constexpr UINT WM_APP_EXIT = WM_APP + 5;
-constexpr UINT_PTR SHOT_TIMER = 2, PHONE_TIMER = 3;
+constexpr UINT_PTR SHOT_TIMER = 2, PHONE_TIMER = 3, DEMO_TIMER = 4;
 constexpr UINT TRAY_OPEN = 1, TRAY_EXIT = 2;
 constexpr UINT WM_RUN_RESIZE = WM_APP + 6;
 constexpr wchar_t HOST[] = L"app.voicebridge";
@@ -31,6 +32,7 @@ struct Shell {
     ComPtr<ICoreWebView2Controller> controller;
     ComPtr<ICoreWebView2> webview;
     double width = 420, min_height = 200;
+    SIZE frame{};   // measured at creation and on DPI changes
     bool resizable = false, ready = false;
     int resize_from = 0, resize_to = 0; double resize_seconds = 0.24, final_min_height = 200;
     LONGLONG resize_start = 0; bool resizing = false;
@@ -43,7 +45,7 @@ std::unique_ptr<vb::Bridge> bridge;
 std::thread starter;
 vb::fs::path config_path, shot_path;
 std::string shot_state, shot_page, override_bind, last_status = "正在连接本机服务…";
-int override_port = 0;
+int override_port = 0, demo_toggle_ms = 0;
 bool isolated = false, devtools = false, dark = false, closing = false, phone_connected = false, tray_added = false;
 HANDLE activation_event{}, activation_ack{}, activation_wait{};
 HINSTANCE instance{};
@@ -71,6 +73,12 @@ double ease(double x) {
     return bezier(t, 0, 1);
 }
 LONGLONG now_ticks() { LARGE_INTEGER value{}; QueryPerformanceCounter(&value); return value.QuadPart; }
+// Display refresh period in QPC ticks (falls back to 60 Hz).
+LONGLONG refresh_ticks() {
+    DWM_TIMING_INFO timing{sizeof(timing)};
+    if (SUCCEEDED(DwmGetCompositionTimingInfo(nullptr, &timing)) && timing.qpcRefreshPeriod) return static_cast<LONGLONG>(timing.qpcRefreshPeriod);
+    LARGE_INTEGER f{}; QueryPerformanceFrequency(&f); return f.QuadPart / 60;
+}
 
 void post(Shell* target, vb::json const& message) {
     if (target && target->webview && target->ready) target->webview->PostWebMessageAsJson(vb::wide(message.dump()).c_str());
@@ -170,6 +178,7 @@ void handle_web_message(Shell* s, vb::json const& message) {
         post(s, settings_message()); post(s, bridge_message()); post(s, {{"type", "phone"}, {"connected", phone_connected}});
         post(s, {{"type", "status"}, {"text", last_status}, {"count", config->settings()["character_count"]}});
         if (s->page == "qr") post(s, qr_message());
+        if (s->page == "main" && demo_toggle_ms) SetTimer(s->hwnd, DEMO_TIMER, demo_toggle_ms, nullptr);
         if (!shot_path.empty()) {
             auto target = shot_page.empty() ? std::string("main") : shot_page;
             if (s->page == "main" && target != "main") { if (target == "close") request_close(); else open_shell(target, 420, 200, false); }
@@ -183,6 +192,9 @@ void handle_web_message(Shell* s, vb::json const& message) {
             // The minimum only applies once the animation lands; applying it first would snap the window.
             s->final_min_height = min; s->min_height = std::min(min, client.bottom / scale(s->hwnd));
             s->resize_seconds = message.value("duration", 240) / 1000.0; s->resize_start = now_ticks();
+            // Chromium presents about two refreshes after the page animates; when shrinking, let the edge start that
+            // much later so it never cuts into content (the status bar) that has not moved up yet.
+            if (s->resize_to < s->resize_from) s->resize_start += 2 * refresh_ticks();
             if (!s->resizing) PostMessageW(s->hwnd, WM_RUN_RESIZE, 0, 0);
         } else { s->min_height = min; set_client_height(s->hwnd, s->resize_to); }
         if (s->page != "main" && !IsWindowVisible(s->hwnd)) {
@@ -224,6 +236,12 @@ void handle_web_message(Shell* s, vb::json const& message) {
     else if (cmd == "refresh" && bridge) { bridge->refresh(); broadcast(bridge_message()); post(s, qr_message()); }
     else if (cmd == "rotate" && bridge) { bridge->rotate(); post(s, qr_message()); status("配对链接已更新，请重新扫码"); }
     else if (cmd == "tray") { close_shell("close"); minimize_to_tray(); }
+    else if (cmd == "trace" && demo_toggle_ms) {   // verification only: page height vs window edge per frame
+        RECT client{}; GetClientRect(s->hwnd, &client);
+        std::ofstream log(config_path.parent_path() / "animation-trace.txt", std::ios::app);
+        log << now_ticks() * 1000 / [] { LARGE_INTEGER f{}; QueryPerformanceFrequency(&f); return f.QuadPart; }() << ' '
+            << message.value("h", 0.0) << ' ' << client.bottom / scale(s->hwnd) << std::endl;
+    }
     else if (cmd == "exit") exit_app();
 }
 
@@ -277,8 +295,8 @@ void open_shell(std::string const& page, double width, double min_height, bool r
     DWORD corner = 2 /*DWMWCP_ROUND*/; DwmSetWindowAttribute(s->hwnd, 33 /*DWMWA_WINDOW_CORNER_PREFERENCE*/, &corner, sizeof(corner));
     apply_theme(s.get());
     SetWindowPos(s->hwnd, nullptr, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
-    auto extra = frame_extra(s->hwnd);
-    int w = static_cast<int>(std::lround(width * scale(s->hwnd))) + extra.cx, h = static_cast<int>(std::lround(min_height * scale(s->hwnd))) + extra.cy;
+    auto extra = s->frame = frame_extra(s->hwnd);
+    int w =static_cast<int>(std::lround(width * scale(s->hwnd))) + extra.cx, h = static_cast<int>(std::lround(min_height * scale(s->hwnd))) + extra.cy;
     MONITORINFO monitor{sizeof(monitor)}; GetMonitorInfoW(MonitorFromWindow(main ? s->hwnd : main_window(), MONITOR_DEFAULTTONEAREST), &monitor); auto work = monitor.rcWork;
     SetWindowPos(s->hwnd, nullptr, work.left + (work.right - work.left - w) / 2, work.top + (work.bottom - work.top - h) / 2, w, h, SWP_NOZORDER);
     auto raw = s.get(); shells[page] = std::move(s);
@@ -313,14 +331,20 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
         if (s && !s->resizable && hit >= HTLEFT && hit <= HTBOTTOMRIGHT) return HTBORDER;
         return hit; }
     case WM_GETMINMAXINFO:
-        if (s) { auto info = reinterpret_cast<MINMAXINFO*>(lparam); auto extra = frame_extra(hwnd);
+        // Restoring asks for this while the rectangles still describe the minimized stub, so never measure here.
+        if (s) { auto info = reinterpret_cast<MINMAXINFO*>(lparam); auto extra = s->frame;
             info->ptMinTrackSize.x = static_cast<LONG>(std::lround(s->width * scale(hwnd))) + extra.cx;
             info->ptMinTrackSize.y = static_cast<LONG>(std::lround(s->min_height * scale(hwnd))) + extra.cy; return 0; }
         break;
     case WM_DPICHANGED: { auto rect = reinterpret_cast<RECT*>(lparam);
-        SetWindowPos(hwnd, nullptr, rect->left, rect->top, rect->right - rect->left, rect->bottom - rect->top, SWP_NOZORDER | SWP_NOACTIVATE); return 0; }
+        SetWindowPos(hwnd, nullptr, rect->left, rect->top, rect->right - rect->left, rect->bottom - rect->top, SWP_NOZORDER | SWP_NOACTIVATE);
+        if (s && !IsIconic(hwnd)) s->frame = frame_extra(hwnd);
+        return 0; }
     case WM_SIZE:
-        if (s && s->controller) { RECT bounds{}; GetClientRect(hwnd, &bounds); s->controller->put_Bounds(bounds); s->controller->put_IsVisible(wparam != SIZE_MINIMIZED); }
+        // While the edge animates, the WebView keeps one fixed, larger size (see WM_RUN_RESIZE): resizing it every
+        // frame lets the window edge outrun Chromium's frames and exposes stale pixels (tearing).
+        if (s && s->controller && !s->resizing) { RECT bounds{}; GetClientRect(hwnd, &bounds); s->controller->put_Bounds(bounds); }
+        if (s && s->controller) s->controller->put_IsVisible(wparam != SIZE_MINIMIZED);
         return 0;
     case WM_SETFOCUS:
         if (s && s->controller) s->controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
@@ -328,6 +352,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
     case WM_TIMER:
         if (!s) return 0;
         if (wparam == SHOT_TIMER) { KillTimer(hwnd, SHOT_TIMER); capture_and_exit(s); }
+        else if (wparam == DEMO_TIMER) post(s, {{"type", "demo"}});
         else if (wparam == PHONE_TIMER && bridge) {
             auto active = bridge->phone_active();
             if (active != phone_connected) { phone_connected = active; broadcast({{"type", "phone"}, {"connected", active}}); }
@@ -361,21 +386,35 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
         // One step per DWM composition (vsync) instead of a coarse WM_TIMER; messages keep flowing meanwhile.
         if (!s || s->resizing) return 0;
         s->resizing = true;
+        if (s->controller) { RECT bounds{}; GetClientRect(hwnd, &bounds); bounds.bottom = std::max(s->resize_from, s->resize_to); s->controller->put_Bounds(bounds); }
         LARGE_INTEGER frequency{}; QueryPerformanceFrequency(&frequency);
         bool quit = false; int quit_code = 0;
+        // DwmFlush alone does not always block (it returned every ~4ms while shrinking), which flooded the UI
+        // thread and halved Chromium's frame rate; pace every step to at least one refresh period.
+        auto period = refresh_ticks(); timeBeginPeriod(1);
         for (;;) {
-            auto t = std::min(1.0, (now_ticks() - s->resize_start) / static_cast<double>(frequency.QuadPart) / s->resize_seconds);
+            auto step = now_ticks();
+            auto t = std::clamp((now_ticks() - s->resize_start) / static_cast<double>(frequency.QuadPart) / s->resize_seconds, 0.0, 1.0);
             set_client_height(hwnd, static_cast<int>(std::lround(s->resize_from + (s->resize_to - s->resize_from) * ease(t))));
             if (t >= 1) break;
             DwmFlush();
-            MSG msg{};
-            while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
-                if (msg.message == WM_QUIT) { quit = true; quit_code = static_cast<int>(msg.wParam); break; }
-                TranslateMessage(&msg); DispatchMessageW(&msg);
-            }
+            do {
+                MSG msg{};
+                while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+                    if (msg.message == WM_QUIT) { quit = true; quit_code = static_cast<int>(msg.wParam); break; }
+                    TranslateMessage(&msg); DispatchMessageW(&msg);
+                }
+                if (quit || now_ticks() - step >= period * 9 / 10) break;
+                Sleep(1);
+            } while (true);
             if (quit || reinterpret_cast<Shell*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA)) != s) break;
         }
-        if (reinterpret_cast<Shell*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA)) == s) { s->resizing = false; s->min_height = s->final_min_height; }
+        timeEndPeriod(1);
+        if (reinterpret_cast<Shell*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA)) == s) {
+            s->resizing = false; s->min_height = s->final_min_height;
+            if (s->controller) { RECT bounds{}; GetClientRect(hwnd, &bounds); s->controller->put_Bounds(bounds); }
+            post(s, {{"type", "resized"}});
+        }
         if (quit) PostQuitMessage(quit_code);
         return 0; }
     case WM_SHELL_DESTROY:
@@ -418,10 +457,12 @@ int WINAPI wWinMain(HINSTANCE hinstance, HINSTANCE, PWSTR, int) {
             else if (argument == L"--shot-page" && i + 1 < count) shot_page = vb::utf8(args[++i]);
             else if (argument == L"--self-test" && i + 1 < count) test_report = args[++i];
             else if (argument == L"--devtools") devtools = true;
+            else if (argument == L"--demo-toggle" && i + 1 < count) demo_toggle_ms = std::stoi(args[++i]);   // verification only
             else throw std::runtime_error("Unknown command line argument");
         }
         LocalFree(args);
         if (!test_report.empty()) return vb::run_tests(test_report);
+        if (demo_toggle_ms && !isolated) throw std::runtime_error("--demo-toggle requires --config");
         winrt::check_hresult(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED));
         auto suffix = isolated ? L".WebTest." + std::to_wstring(std::hash<std::wstring>{}(config_path.wstring())) : L"";
         mutex = CreateMutexW(nullptr, FALSE, (std::wstring(L"Local\\VoiceBridge.SingleInstance") + suffix).c_str());
